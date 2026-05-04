@@ -275,9 +275,11 @@ void Application::run() {
   });
   runStartupPhase("telemetry enqueue",
                   [this]() { m_telemetryService.maybeSend(m_configService, m_httpClient, m_wayland); });
-
-  runStartupPhase("malloc_trim", []() { malloc_trim(0); });
-
+  
+  #ifndef __FreeBSD__
+    runStartupPhase("malloc_trim", []() { malloc_trim(0); });
+  #endif
+  
   m_trayInitTimer.start(std::chrono::milliseconds(500), [this]() { startTrayService(); });
 
   m_mainLoop = std::make_unique<MainLoop>(m_wayland, m_bar, [this]() { return currentPollSources(); });
