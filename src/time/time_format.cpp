@@ -136,13 +136,18 @@ std::string formatLocalTime(const char* fmt) {
   if (auto compat = formatStrftimeCompat(fmt, localTm)) {
     return *compat;
   }
-
+#ifndef __FreeBSD__
   const auto local = current_zone()->to_local(now);
   try {
     return std::vformat(std::locale(""), fmt, std::make_format_args(local));
   } catch (...) {
     return fmt;
   }
+#else
+  char buf[256]{};
+  std::strftime(buf, sizeof(buf), fmt, &localTm);
+  return std::string(buf);
+#endif
 }
 
 std::string formatCurrentDate() {
