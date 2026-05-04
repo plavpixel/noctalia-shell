@@ -22,9 +22,11 @@
 #include "util/string_utils.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <format>
 #include <limits>
 #include <locale>
@@ -144,7 +146,12 @@ namespace settings {
       T value{};
       const char* begin = normalized.data();
       const char* end = begin + normalized.size();
-      const auto [ptr, ec] = std::from_chars(begin, end, value, std::chars_format::general);
+
+      char* endp = nullptr;
+      errno = 0;
+      value = std::strtod(begin, &endp);
+      std::errc ec = (errno == ERANGE) ? std::errc::result_out_of_range : std::errc();
+      const char* ptr = (endp == begin) ? begin : endp;
       if (ec != std::errc{} || ptr != end || !std::isfinite(value)) {
         return std::nullopt;
       }
