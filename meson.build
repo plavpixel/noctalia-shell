@@ -28,6 +28,11 @@ if get_option('buildtype') == 'release'
   )
 endif
 
+# ── FreeBSD needs epoll-shim and pthread ───--------------------───────────────
+if host_machine.system() == 'freebsd'
+  add_project_link_arguments('-pthread', '-L/usr/local/lib', '-lepoll-shim', language: ['c', 'cpp'])
+endif
+
 # ── Dependencies ──────────────────────────────────────────────────────────────
 sdbus_cpp_dep       = dependency('sdbus-c++')
 wayland_client_dep  = dependency('wayland-client')
