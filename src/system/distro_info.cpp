@@ -21,6 +21,31 @@
 #include <utility>
 #include <vector>
 
+#ifdef __FreeBSD__
+#include <cstring>
+#include <sys/stat.h>
+struct statx {
+  unsigned int stx_mask;
+  struct {
+    uint64_t tv_sec;
+    uint32_t tv_nsec;
+  } stx_btime;
+};
+#define STATX_BTIME 1
+static int statx(int, const char* pathname, int, unsigned int mask, struct statx* buf) {
+  struct stat st;
+  if (stat(pathname, &st) != 0)
+    return -1;
+  std::memset(buf, 0, sizeof(*buf));
+  if (mask & STATX_BTIME) {
+    buf->stx_mask |= STATX_BTIME;
+    buf->stx_btime.tv_sec = st.st_birthtime;
+    buf->stx_btime.tv_nsec = 0;
+  }
+  return 0;
+}
+#endif
+
 namespace {
 
   std::string trim(std::string_view value) {
