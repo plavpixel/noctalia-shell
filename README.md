@@ -20,6 +20,16 @@ sudo dnf install meson gcc-c++ just \
   pam-devel polkit-devel libcurl-devel libwebp-devel
 ```
 
+### FreeBSD
+
+```sh
+doas pkg install meson ninja just pkgconf \
+  wayland wayland-protocols mesa-libs \
+  freetype2 fontconfig cairo pango basu \
+  libxkbcommon glib sdbus-cpp pipewire \
+  polkit curl webp libepoll-shim evdev-proto
+```
+
 ### Arch
 
 ```sh
