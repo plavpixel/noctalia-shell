@@ -27,8 +27,8 @@ struct BarMonitorOverride {
   std::optional<std::int32_t> radiusTopRight;
   std::optional<std::int32_t> radiusBottomLeft;
   std::optional<std::int32_t> radiusBottomRight;
-  std::optional<std::int32_t> marginH;       // horizontal compositor margin (left = right = marginH)
-  std::optional<std::int32_t> marginV;       // vertical compositor margin (gap between bar and screen edge)
+  std::optional<std::int32_t> marginEnds;    // inset from each end of the bar along its main axis
+  std::optional<std::int32_t> marginEdge;    // distance from the nearest screen edge (floats the bar when > 0)
   std::optional<std::int32_t> padding;       // main-axis padding from bar edges to start/end sections
   std::optional<std::int32_t> widgetSpacing; // gap between widgets within a section
   std::optional<bool> shadow;                // use the global shell shadow on this bar
@@ -44,6 +44,7 @@ struct BarMonitorOverride {
   std::optional<ColorSpec> widgetCapsuleBorder;
   std::optional<ColorSpec> widgetCapsuleForeground;
   std::optional<ColorSpec> widgetColor;
+  std::optional<std::vector<std::string>> widgetCapsuleGroups;
   std::optional<double> widgetCapsulePadding;
   std::optional<double> widgetCapsuleOpacity;
 
@@ -63,8 +64,8 @@ struct BarConfig {
   std::int32_t radiusTopRight = static_cast<std::int32_t>(Style::radiusXl);
   std::int32_t radiusBottomLeft = static_cast<std::int32_t>(Style::radiusXl);
   std::int32_t radiusBottomRight = static_cast<std::int32_t>(Style::radiusXl);
-  std::int32_t marginH = 180;     // horizontal compositor margin (left = right = marginH)
-  std::int32_t marginV = 10;      // vertical compositor margin (gap between bar and screen edge)
+  std::int32_t marginEnds = 180;  // inset from each end of the bar along its main axis
+  std::int32_t marginEdge = 10;   // distance from the nearest screen edge (floats the bar when > 0)
   std::int32_t padding = 14;      // main-axis padding from bar edges to start/end sections
   std::int32_t widgetSpacing = 6; // gap between widgets within a section
   bool shadow = true;             // use the global shell shadow
@@ -84,6 +85,7 @@ struct BarConfig {
   // Default icon + primary label color for all widgets on this bar (same as per-widget `color`); per-widget `color`
   // overrides.
   std::optional<ColorSpec> widgetColor;
+  std::vector<std::string> widgetCapsuleGroups;
   // Inner padding between capsule edge and widget content (logical px), multiplied by widget content scale on the bar.
   float widgetCapsulePadding = Style::barCapsulePadding;
   // Capsule background opacity multiplier (0.0–1.0).
@@ -96,14 +98,24 @@ struct BarConfig {
   bool operator==(const BarConfig&) const = default;
 };
 
+struct ShortcutConfig {
+  std::string type;
+  bool operator==(const ShortcutConfig&) const = default;
+};
+
+[[nodiscard]] std::vector<ShortcutConfig> defaultControlCenterShortcuts();
+
 using WidgetSettingValue = std::variant<bool, std::int64_t, double, std::string, std::vector<std::string>>;
-using ConfigOverrideValue = std::variant<bool, std::int64_t, double, std::string, std::vector<std::string>>;
+using ConfigOverrideValue =
+    std::variant<bool, std::int64_t, double, std::string, std::vector<std::string>, std::vector<ShortcutConfig>>;
 
 // Optional rounded “capsule” behind a bar widget (see `[widget.*] capsule_*` in CONFIG.md).
 // Corner shape (pill), border width, and edge softness are fixed in the shell code; padding is configurable.
 struct WidgetBarCapsuleSpec {
   bool enabled = false;
   ColorSpec fill = colorSpecFromRole(ColorRole::SurfaceVariant);
+  // Adjacent widgets in the same section with the same non-empty group and identical capsule styling share one shell.
+  std::string group;
   // Set only when `capsule_border` is present and non-empty in config; otherwise no outline.
   std::optional<ColorSpec> border;
   // Icon + primary label color when the capsule is visible; unset = widget defaults.
@@ -210,8 +222,8 @@ struct DockConfig {
   std::int32_t itemSpacing = 6;    // gap between items
   float backgroundOpacity = 0.88f;
   std::int32_t radius = 16;        // dock background corner radius
-  std::int32_t marginH = 0;        // horizontal compositor margin from screen edges
-  std::int32_t marginV = 8;        // vertical gap between dock and screen edge
+  std::int32_t marginEnds = 0;     // inset from each end of the dock along its main axis
+  std::int32_t marginEdge = 8;     // distance from the nearest screen edge (floats the dock when > 0)
   bool shadow = true;              // use the global shell shadow
   bool showRunning = true;         // also show running apps not in pinned list
   bool autoHide = false;           // fade out when not hovered (overlay mode)
@@ -334,6 +346,10 @@ struct ShellConfig {
 
   struct PanelConfig {
     bool backgroundBlur = true; // request compositor blur behind panels via ext-background-effect-v1
+    bool attachLauncher = false;
+    bool attachClipboard = false;
+    bool attachControlCenter = true;
+    bool attachWallpaper = true;
 
     bool operator==(const PanelConfig&) const = default;
   };
@@ -375,7 +391,7 @@ struct WeatherConfig {
   bool effects = true;
   std::string address;
   std::int32_t refreshMinutes = 30;
-  std::string unit = "celsius";
+  std::string unit = "metric";
 };
 
 struct SystemConfig {
@@ -449,6 +465,11 @@ struct KeybindsConfig {
 };
 
 struct NightLightConfig {
+  // wlsunset requires day > night with at least this much headroom, in Kelvin.
+  static constexpr std::int32_t kTemperatureMin = 1000;
+  static constexpr std::int32_t kTemperatureMax = 10000;
+  static constexpr std::int32_t kTemperatureGap = 100;
+
   bool enabled = false;
   bool force = false;
   bool useWeatherLocation = true; // use WeatherService coordinates when start/stop and explicit lat/long are not set
@@ -563,13 +584,6 @@ struct ThemeConfig {
   std::string wallpaperScheme = "m3-content";
   ThemeMode mode = ThemeMode::Dark;
   TemplatesConfig templates;
-};
-
-struct ShortcutConfig {
-  std::string type;
-  std::optional<std::string> label;
-  std::optional<std::string> icon;
-  bool operator==(const ShortcutConfig&) const = default;
 };
 
 struct ControlCenterConfig {

@@ -119,6 +119,10 @@ WallpaperPanel::WallpaperPanel(WaylandConnection* wayland, ConfigService* config
 
 WallpaperPanel::~WallpaperPanel() = default;
 
+bool WallpaperPanel::prefersAttachedToBar() const noexcept {
+  return m_config == nullptr || m_config->config().shell.panel.attachWallpaper;
+}
+
 void WallpaperPanel::create() {
   const float scale = contentScale();
   const auto configureIconButton = [scale](Button* button) {
@@ -326,7 +330,7 @@ void WallpaperPanel::create() {
   }
 
   if (m_thumbnails != nullptr) {
-    m_thumbnails->setReadyCallback([this]() {
+    m_thumbnailPendingSub = m_thumbnails->subscribePendingUpload([this]() {
       if (m_rootLayout == nullptr) {
         return;
       }
@@ -344,7 +348,7 @@ void WallpaperPanel::doLayout(Renderer& renderer, float width, float height) {
   m_lastHeight = height;
 
   if (m_thumbnails != nullptr) {
-    m_thumbnails->uploadPending(renderer.textureManager());
+    (void)m_thumbnails->uploadPending(renderer.textureManager());
     m_thumbnailRefreshPending = false;
   }
 
@@ -369,9 +373,9 @@ void WallpaperPanel::doUpdate(Renderer& renderer) {
   }
 
   if (m_thumbnailRefreshPending && m_thumbnails != nullptr) {
-    m_thumbnails->uploadPending(renderer.textureManager());
+    const bool changed = m_thumbnails->uploadPending(renderer.textureManager());
     m_thumbnailRefreshPending = false;
-    if (m_adapter != nullptr) {
+    if (changed && m_adapter != nullptr) {
       m_adapter->setRenderer(&renderer);
       m_adapter->refreshVisibleThumbnails(renderer);
     }
@@ -404,11 +408,6 @@ void WallpaperPanel::onClose() {
   m_pendingFilterQuery.clear();
   m_filterQuery.clear();
 
-  if (m_thumbnails != nullptr) {
-    m_thumbnails->setReadyCallback(nullptr);
-    m_thumbnails->releaseAll();
-  }
-
   m_visibleEntries.clear();
 
   // Detach adapter from grid before either is destroyed; the pool tiles were
@@ -417,6 +416,7 @@ void WallpaperPanel::onClose() {
     m_grid->setAdapter(nullptr);
   }
   m_adapter.reset();
+  m_thumbnailPendingSub.disconnect();
 
   m_rootLayout = nullptr;
   m_header = nullptr;

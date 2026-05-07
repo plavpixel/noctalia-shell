@@ -90,6 +90,15 @@ namespace {
       glyph->setVisible(false);
       m_glyph = static_cast<Glyph*>(m_row->addChild(std::move(glyph)));
 
+      m_image->setAsyncReadyCallback([this]() {
+        if (m_actionTextVisible || m_iconPath.empty() || m_image == nullptr || m_glyph == nullptr ||
+            !m_image->hasImage()) {
+          return;
+        }
+        m_image->setVisible(true);
+        m_glyph->setVisible(false);
+      });
+
       auto textCol = std::make_unique<Flex>();
       textCol->setDirection(FlexDirection::Vertical);
       textCol->setAlign(FlexAlign::Start);
@@ -102,7 +111,6 @@ namespace {
       title->setBold(true);
       title->setColor(colorSpecFromRole(ColorRole::OnSurface));
       title->setMaxLines(1);
-      title->setStableBaseline(true);
       m_title = static_cast<Label*>(m_textCol->addChild(std::move(title)));
 
       auto subtitle = std::make_unique<Label>();
@@ -110,7 +118,6 @@ namespace {
       subtitle->setFontSize(Style::fontSizeCaption * scale);
       subtitle->setColor(colorSpecFromRole(ColorRole::OnSurfaceVariant));
       subtitle->setMaxLines(1);
-      subtitle->setStableBaseline(true);
       m_subtitle = static_cast<Label*>(m_textCol->addChild(std::move(subtitle)));
     }
 
@@ -263,6 +270,10 @@ LauncherPanel::LauncherPanel(ConfigService* config, AsyncTextureCache* asyncText
 
 LauncherPanel::~LauncherPanel() = default;
 
+bool LauncherPanel::prefersAttachedToBar() const noexcept {
+  return m_config != nullptr && m_config->config().shell.panel.attachLauncher;
+}
+
 void LauncherPanel::addProvider(std::unique_ptr<LauncherProvider> provider) {
   provider->initialize();
   m_providers.push_back(std::move(provider));
@@ -343,17 +354,9 @@ void LauncherPanel::doLayout(Renderer& renderer, float width, float height) {
 
   m_container->setSize(width, height);
   m_container->layout(renderer);
-
-  if (m_pendingScrollToSelected) {
-    scrollToSelected();
-    m_pendingScrollToSelected = false;
-    // Re-run layout so the rebound rows reflect the new scroll offset.
-    m_container->layout(renderer);
-  }
 }
 
 void LauncherPanel::onOpen(std::string_view context) {
-  m_pendingScrollToSelected = false;
   const std::string initialValue(context);
   if (m_input != nullptr) {
     m_input->setValue(initialValue);
@@ -372,7 +375,6 @@ void LauncherPanel::onClose() {
   m_query.clear();
   m_results.clear();
   m_selectedIndex = 0;
-  m_pendingScrollToSelected = false;
 
   if (m_grid != nullptr) {
     m_grid->setAdapter(nullptr);
@@ -407,7 +409,6 @@ void LauncherPanel::onIconThemeChanged() {
     }
   }
   refreshResults();
-  m_pendingScrollToSelected = true;
 }
 
 InputArea* LauncherPanel::initialFocusArea() const { return m_input != nullptr ? m_input->inputArea() : nullptr; }
@@ -510,7 +511,6 @@ void LauncherPanel::refreshResults() {
     m_grid->setSelectedIndex(m_selectedIndex);
   }
   applyEmptyState();
-  m_pendingScrollToSelected = !m_results.empty();
 }
 
 void LauncherPanel::applyEmptyState() {
@@ -569,10 +569,6 @@ bool LauncherPanel::handleKeyEvent(std::uint32_t sym, std::uint32_t modifiers) {
       if (m_grid != nullptr) {
         m_grid->setSelectedIndex(m_selectedIndex);
       }
-      m_pendingScrollToSelected = true;
-      if (root() != nullptr) {
-        root()->markLayoutDirty();
-      }
     }
     return true;
   }
@@ -582,10 +578,6 @@ bool LauncherPanel::handleKeyEvent(std::uint32_t sym, std::uint32_t modifiers) {
       ++m_selectedIndex;
       if (m_grid != nullptr) {
         m_grid->setSelectedIndex(m_selectedIndex);
-      }
-      m_pendingScrollToSelected = true;
-      if (root() != nullptr) {
-        root()->markLayoutDirty();
       }
     }
     return true;
@@ -597,27 +589,4 @@ bool LauncherPanel::handleKeyEvent(std::uint32_t sym, std::uint32_t modifiers) {
   }
 
   return false;
-}
-
-void LauncherPanel::scrollToSelected() {
-  if (m_grid == nullptr || m_selectedIndex >= m_results.size()) {
-    return;
-  }
-
-  const float rowHeight = launcherRowHeight(contentScale());
-  if (rowHeight <= 0.0f) {
-    return;
-  }
-
-  ScrollView& scroll = m_grid->scrollView();
-  const float itemTop = static_cast<float>(m_selectedIndex) * rowHeight;
-  const float itemBottom = itemTop + rowHeight;
-  const float viewportH = m_grid->height();
-  const float scrollOffset = scroll.scrollOffset();
-
-  if (itemTop < scrollOffset) {
-    scroll.setScrollOffset(itemTop);
-  } else if (itemBottom > scrollOffset + viewportH) {
-    scroll.setScrollOffset(itemBottom - viewportH);
-  }
 }

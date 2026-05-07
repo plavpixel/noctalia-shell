@@ -131,6 +131,7 @@ std::unique_ptr<Flex> WeatherTab::create() {
   currentDesc->setText(i18n::tr("control-center.weather.waiting"));
   currentDesc->setFontSize(Style::fontSizeBody * scale);
   currentDesc->setColor(colorSpecFromRole(ColorRole::OnSurface));
+  currentDesc->setMaxLines(3);
   m_currentDescLabel = currentDesc.get();
   currentBottom->addChild(std::move(currentDesc));
 
@@ -260,7 +261,6 @@ std::unique_ptr<Flex> WeatherTab::create() {
     meta->setBold(true);
     meta->setFontSize(Style::fontSizeBody * scale);
     meta->setColor(colorSpecFromRole(ColorRole::OnSurface));
-    meta->setStableBaseline(true);
     m_dayMetas[i] = meta.get();
     daySlot->addChild(std::move(meta));
     topRow->addChild(std::move(daySlot));
@@ -270,7 +270,6 @@ std::unique_ptr<Flex> WeatherTab::create() {
     temps->setFontSize(Style::fontSizeBody * scale);
     temps->setColor(colorSpecFromRole(ColorRole::OnSurface));
     temps->setTextAlign(TextAlign::End);
-    temps->setStableBaseline(true);
     m_dayTemps[i] = temps.get();
     topRow->addChild(std::move(temps));
 
@@ -655,8 +654,11 @@ void WeatherTab::sync(Renderer& renderer) {
       colorSpecFromRole(m_weather->error().empty() ? ColorRole::OnSurfaceVariant : ColorRole::Error));
   m_statusLabel->setVisible(!status.empty());
   if (m_windLabel != nullptr) {
-    m_windLabel->setText(std::format("{} {} {}", static_cast<int>(std::lround(snapshot.current.windSpeedKmh)),
-                                     snapshot.currentUnits.windSpeed.empty() ? "km/h" : snapshot.currentUnits.windSpeed,
+    const bool imperial = m_weather->useImperial();
+    const double windSpeed = imperial ? snapshot.current.windSpeedKmh * 0.621371 : snapshot.current.windSpeedKmh;
+    const char* windUnit =
+        imperial ? "mph" : (snapshot.currentUnits.windSpeed.empty() ? "km/h" : snapshot.currentUnits.windSpeed.c_str());
+    m_windLabel->setText(std::format("{} {} {}", static_cast<int>(std::lround(windSpeed)), windUnit,
                                      windDirectionLabel(snapshot.current.windDirectionDeg)));
   }
   if (m_sunriseLabel != nullptr) {
@@ -679,12 +681,20 @@ void WeatherTab::sync(Renderer& renderer) {
     m_tempMinLabel->setText(!snapshot.forecastDays.empty() ? std::format("{}{}", temp, unit) : std::string("--"));
   }
   if (m_elevationLabel != nullptr) {
-    m_elevationLabel->setText(std::format("{}m", static_cast<int>(snapshot.elevationM)));
+    const bool imperial = m_weather->useImperial();
+    const int elevation = static_cast<int>(imperial ? snapshot.elevationM * 3.28084 : snapshot.elevationM);
+    m_elevationLabel->setText(std::format("{}{}", elevation, imperial ? "ft" : "m"));
   }
   if (m_timeZoneLabel != nullptr) {
+    // Use the last component of the IANA path ("America/Toronto" → "Toronto") to keep
+    // the label short enough to remain right-aligned without elision in most cases.
+    std::string tzCity = snapshot.timezone;
+    if (const auto slash = tzCity.rfind('/'); slash != std::string::npos) {
+      tzCity = tzCity.substr(slash + 1);
+    }
     m_timeZoneLabel->setText(snapshot.timezoneAbbreviation.empty()
                                  ? (snapshot.timezone.empty() ? std::string("--") : snapshot.timezone)
-                                 : std::format("{} ({})", snapshot.timezoneAbbreviation, snapshot.timezone));
+                                 : std::format("{} ({})", snapshot.timezoneAbbreviation, tzCity));
   }
 
   const bool firstForecastIsToday =

@@ -45,6 +45,45 @@ namespace {
     return localX >= 0.0f && localX < node->width() && localY >= 0.0f && localY < node->height();
   }
 
+  std::pair<float, float> surfaceOriginForOutputLocal(const BarInstance& instance, const WaylandOutput& outputInfo) {
+    if (instance.surface == nullptr) {
+      return {0.0f, 0.0f};
+    }
+    const auto* surface = instance.surface.get();
+    const std::uint32_t anchor = surface->anchor();
+    const bool aTop = (anchor & LayerShellAnchor::Top) != 0;
+    const bool aBottom = (anchor & LayerShellAnchor::Bottom) != 0;
+    const bool aLeft = (anchor & LayerShellAnchor::Left) != 0;
+    const bool aRight = (anchor & LayerShellAnchor::Right) != 0;
+    const float mTop = static_cast<float>(surface->marginTop());
+    const float mRight = static_cast<float>(surface->marginRight());
+    const float mBottom = static_cast<float>(surface->marginBottom());
+    const float mLeft = static_cast<float>(surface->marginLeft());
+    const float surfW = static_cast<float>(surface->width());
+    const float surfH = static_cast<float>(surface->height());
+    const float outputW = static_cast<float>(outputInfo.logicalWidth);
+    const float outputH = static_cast<float>(outputInfo.logicalHeight);
+
+    float x = 0.0f;
+    float y = 0.0f;
+    if (aLeft && aRight) {
+      x = mLeft;
+    } else if (aRight) {
+      x = std::max(0.0f, outputW - mRight - surfW);
+    } else {
+      x = mLeft;
+    }
+
+    if (aTop && aBottom) {
+      y = mTop;
+    } else if (aBottom) {
+      y = std::max(0.0f, outputH - mBottom - surfH);
+    } else {
+      y = mTop;
+    }
+    return {x, y};
+  }
+
   std::uint32_t positionToAnchor(const std::string& position) {
     if (position == "bottom") {
       return LayerShellAnchor::Bottom | LayerShellAnchor::Left | LayerShellAnchor::Right;
@@ -85,8 +124,8 @@ namespace {
     const bool sameShadowSurface =
         (!a.shadow && !b.shadow) || shell::surface_shadow::sameSurfaceMetrics(previousShadow, nextShadow);
     return a.name == b.name && a.position == b.position && a.enabled == b.enabled && a.autoHide == b.autoHide &&
-           a.reserveSpace == b.reserveSpace && a.thickness == b.thickness && a.marginH == b.marginH &&
-           a.marginV == b.marginV && a.shadow == b.shadow && sameShadowSurface &&
+           a.reserveSpace == b.reserveSpace && a.thickness == b.thickness && a.marginEnds == b.marginEnds &&
+           a.marginEdge == b.marginEdge && a.shadow == b.shadow && sameShadowSurface &&
            a.monitorOverrides == b.monitorOverrides;
   }
 
@@ -115,8 +154,8 @@ namespace {
   BarVisualGeometry computeBarVisualGeometry(const BarConfig& cfg, const ShellConfig::ShadowConfig& shadow,
                                              float surfaceWidth, float surfaceHeight) {
     const float barThickness = static_cast<float>(cfg.thickness);
-    const float marginH = static_cast<float>(cfg.marginH);
-    const float marginV = static_cast<float>(cfg.marginV);
+    const float marginEnds = static_cast<float>(cfg.marginEnds);
+    const float marginEdge = static_cast<float>(cfg.marginEdge);
     const bool isBottom = cfg.position == "bottom";
     const bool isRight = cfg.position == "right";
     const bool isVertical = (cfg.position == "left" || cfg.position == "right");
@@ -127,22 +166,24 @@ namespace {
     const float bleedDown = static_cast<float>(sbi.down);
 
     if (isVertical) {
-      const float x = isRight ? bleedLeft : std::min(marginH, bleedLeft);
-      const float y = std::min(marginV, bleedUp);
+      // Vertical bar: edge gap is left/right, ends inset is top/bottom.
+      const float x = isRight ? bleedLeft : std::min(marginEdge, bleedLeft);
+      const float y = std::min(marginEnds, bleedUp);
       return {
           .x = x,
           .y = y,
           .width = barThickness,
-          .height = surfaceHeight - y - std::min(marginV, bleedDown),
+          .height = surfaceHeight - y - std::min(marginEnds, bleedDown),
       };
     }
 
-    const float x = std::min(marginH, bleedLeft);
-    const float y = isBottom ? bleedUp : std::min(marginV, bleedUp);
+    // Horizontal bar: edge gap is top/bottom, ends inset is left/right.
+    const float x = std::min(marginEnds, bleedLeft);
+    const float y = isBottom ? bleedUp : std::min(marginEdge, bleedUp);
     return {
         .x = x,
         .y = y,
-        .width = surfaceWidth - x - std::min(marginH, bleedRight),
+        .width = surfaceWidth - x - std::min(marginEnds, bleedRight),
         .height = barThickness,
     };
   }
@@ -163,6 +204,71 @@ namespace {
     return {-(contentRight + k), 0.0f};
   }
 
+  void applyBarShadowStyle(BarInstance& instance, const ShellConfig::ShadowConfig& shadowConfig, float surfaceWidth,
+                           float surfaceHeight) {
+    if (instance.shadow == nullptr) {
+      return;
+    }
+
+    const Radii barRadii{
+        static_cast<float>(instance.barConfig.radiusTopLeft),
+        static_cast<float>(instance.barConfig.radiusTopRight),
+        static_cast<float>(instance.barConfig.radiusBottomRight),
+        static_cast<float>(instance.barConfig.radiusBottomLeft),
+    };
+    const auto barVisual = computeBarVisualGeometry(instance.barConfig, shadowConfig, surfaceWidth, surfaceHeight);
+    const float barAreaW = barVisual.width;
+    const float barAreaH = barVisual.height;
+    const float bgOpacity = std::clamp(instance.barConfig.backgroundOpacity, 0.0f, 1.0f);
+    const float shadowX = barVisual.x + static_cast<float>(shadowConfig.offsetX);
+    const float shadowY = barVisual.y + static_cast<float>(shadowConfig.offsetY);
+    RoundedRectStyle shadowStyle =
+        shell::surface_shadow::style(shadowConfig, bgOpacity, shell::surface_shadow::Shape{.radius = barRadii});
+
+    const bool panelShadowExclusion = instance.attachedPanelGeometry.has_value() &&
+                                      instance.attachedPanelGeometry->width > 0.0f &&
+                                      instance.attachedPanelGeometry->height > 0.0f;
+    if (panelShadowExclusion) {
+      const auto& attached = *instance.attachedPanelGeometry;
+      const float convexRadius = std::max(0.0f, attached.cornerRadius);
+      const float bulgeRadius = std::max(0.0f, attached.bulgeRadius);
+      const std::string_view barPosition = instance.barConfig.position;
+      const auto corners = attached_panel::cornerShapes(barPosition);
+      const auto pickRadius = [&](CornerShape shape) {
+        return shape == CornerShape::Concave ? bulgeRadius : convexRadius;
+      };
+      shadowStyle.shadowExclusion = true;
+      shadowStyle.shadowExclusionOffsetX = shadowX - attached.x;
+      shadowStyle.shadowExclusionOffsetY = shadowY - attached.y;
+      shadowStyle.shadowExclusionWidth = attached.width;
+      shadowStyle.shadowExclusionHeight = attached.height;
+      shadowStyle.shadowExclusionCorners = corners;
+      shadowStyle.shadowExclusionLogicalInset = attached_panel::logicalInset(barPosition, bulgeRadius);
+      shadowStyle.shadowExclusionRadius =
+          Radii{pickRadius(corners.tl), pickRadius(corners.tr), pickRadius(corners.br), pickRadius(corners.bl)};
+    }
+
+    auto configureShadow = [&](Box* node, float x, float y) {
+      if (node == nullptr) {
+        return;
+      }
+      node->setStyle(shadowStyle);
+      node->setZIndex(-1);
+      node->setPosition(x, y);
+      node->setSize(barAreaW, barAreaH);
+    };
+
+    instance.shadow->setVisible(true);
+    configureShadow(instance.shadow, shadowX, shadowY);
+
+    if (instance.shadowLeftClip != nullptr) {
+      instance.shadowLeftClip->setVisible(false);
+    }
+    if (instance.shadowRightClip != nullptr) {
+      instance.shadowRightClip->setVisible(false);
+    }
+  }
+
   void layoutBarSections(BarInstance& instance, Renderer& renderer, float barAreaW, float barAreaH, float padding,
                          bool isVertical) {
     const float slotCross = isVertical ? barAreaW : barAreaH;
@@ -181,37 +287,48 @@ namespace {
     float cachedBodyExtent = -1.0f;
     float cachedBodyExtentScale = -1.0f;
     auto finalizeCapsules = [isVertical, slotCross, &renderer, &cachedBodyExtent,
-                             &cachedBodyExtentScale](std::vector<std::unique_ptr<Widget>>& widgets) {
-      for (auto& w : widgets) {
-        if (w == nullptr || !w->barCapsuleSpec().enabled) {
+                             &cachedBodyExtentScale](std::vector<BarCapsuleRun>& runs) {
+      for (auto& run : runs) {
+        Node* shell = run.shell;
+        Box* bg = run.bg;
+        Node* content = run.content;
+        if (shell == nullptr || bg == nullptr || content == nullptr) {
           continue;
         }
-        Node* shell = w->barCapsuleShell();
-        Box* bg = w->barCapsuleBox();
-        Node* inner = w->root();
-        if (shell == nullptr || bg == nullptr || inner == nullptr) {
-          continue;
+        if (run.container != nullptr) {
+          run.container->layout(renderer);
         }
-        shell->setVisible(inner->visible());
-        const float scale = w->contentScale();
-        const float iw = inner->width();
-        const float ih = inner->height();
-        if (!w->shouldShowBarCapsule()) {
+
+        bool hasVisibleContent = false;
+        bool hasVisibleInk = false;
+        for (Widget* widget : run.widgets) {
+          if (widget == nullptr || widget->root() == nullptr) {
+            continue;
+          }
+          hasVisibleContent = hasVisibleContent || widget->root()->visible();
+          hasVisibleInk = hasVisibleInk || widget->shouldShowBarCapsule();
+        }
+
+        shell->setVisible(hasVisibleContent);
+        const float scale = run.contentScale;
+        const float iw = content->width();
+        const float ih = content->height();
+        if (!hasVisibleInk) {
           shell->setSize(iw, ih);
-          inner->setPosition(0.0f, 0.0f);
+          content->setPosition(0.0f, 0.0f);
           bg->setVisible(false);
           bg->setPosition(0.0f, 0.0f);
           bg->setSize(iw, ih);
           continue;
         }
         if (scale != cachedBodyExtentScale) {
-          const auto refMetrics = renderer.measureText("A", Style::fontSizeBody * scale);
+          const auto refMetrics = renderer.measureFont(Style::fontSizeBody * scale);
           cachedBodyExtent = std::round(refMetrics.bottom - refMetrics.top);
           cachedBodyExtentScale = scale;
         }
         const float bodyExtent = cachedBodyExtent;
         const float iconExtent = std::max(bodyExtent, std::round(Style::barGlyphSize * scale));
-        const float pad = w->barCapsuleSpec().padding * scale;
+        const float pad = run.spec.padding * scale;
         const float padMain = pad;
         const float padCross = std::min(pad, Style::spaceXs * scale);
         float capsuleCross = bodyExtent + 2.0f * padCross;
@@ -222,32 +339,32 @@ namespace {
         float shellCross = capsuleCross;
         float shellW = isVertical ? shellCross : shellMain;
         float shellH = isVertical ? shellMain : shellCross;
-        float innerX = std::round((shellW - iw) * 0.5f);
-        float innerY = std::round((shellH - ih) * 0.5f);
+        float contentX = std::round((shellW - iw) * 0.5f);
+        float contentY = std::round((shellH - ih) * 0.5f);
         // Glyph-only widgets become a fixed circle based on the bar capsule
         // cross-size, not on the measured content width. Multi-line / wide
         // content (e.g. stacked vertical clock) must NOT be squared, or the
         // capsule collapses on the main axis.
         const float iconThreshold = iconExtent + (kCircularCapsuleNarrowWidthEpsilon * scale);
-        const bool iconSized = iw <= iconThreshold && ih <= iconThreshold;
+        const bool iconSized = run.allowCircularSizing && iw <= iconThreshold && ih <= iconThreshold;
         if (iconSized) {
           const float side = capsuleCross;
           shellW = side;
           shellH = side;
-          innerX = std::round((shellW - iw) * 0.5f);
-          innerY = std::round((shellH - ih) * 0.5f);
+          contentX = std::round((shellW - iw) * 0.5f);
+          contentY = std::round((shellH - ih) * 0.5f);
         }
         shell->setSize(shellW, shellH);
         bg->setVisible(true);
         bg->setPosition(0.0f, 0.0f);
         bg->setSize(shellW, shellH);
-        inner->setPosition(innerX, innerY);
+        content->setPosition(contentX, contentY);
         bg->setRadius(std::min(shellW, shellH) * 0.5f);
       }
     };
-    finalizeCapsules(instance.startWidgets);
-    finalizeCapsules(instance.centerWidgets);
-    finalizeCapsules(instance.endWidgets);
+    finalizeCapsules(instance.startCapsuleRuns);
+    finalizeCapsules(instance.centerCapsuleRuns);
+    finalizeCapsules(instance.endCapsuleRuns);
 
     const float contentMainStart = padding;
     const float contentMainEnd = std::max(contentMainStart, (isVertical ? barAreaH : barAreaW) - padding);
@@ -351,7 +468,7 @@ bool Bar::initialize(WaylandConnection& wayland, ConfigService* config, TimeServ
                      PipeWireSpectrum* audioSpectrum, HttpClient* httpClient, WeatherService* weatherService,
                      RenderContext* renderContext, NightLightManager* nightLight,
                      noctalia::theme::ThemeService* themeService, BluetoothService* bluetooth,
-                     BrightnessService* brightness, FileWatcher* fileWatcher) {
+                     BrightnessService* brightness, LockKeysService* lockKeys, FileWatcher* fileWatcher) {
   m_wayland = &wayland;
   m_config = config;
   m_notifications = notifications;
@@ -371,12 +488,13 @@ bool Bar::initialize(WaylandConnection& wayland, ConfigService* config, TimeServ
   m_themeService = themeService;
   m_bluetooth = bluetooth;
   m_brightness = brightness;
+  m_lockKeys = lockKeys;
   m_fileWatcher = fileWatcher;
 
   m_widgetFactory = std::make_unique<WidgetFactory>(
       *m_wayland, m_config->config(), m_notifications, m_tray, m_audio, m_upower, m_sysmon, m_powerProfiles, m_network,
       m_idleInhibitor, m_mpris, m_audioSpectrum, m_httpClient, m_weatherService, m_nightLight, m_themeService,
-      m_bluetooth, m_brightness, m_fileWatcher);
+      m_bluetooth, m_brightness, m_lockKeys, m_fileWatcher);
 
   if (timeService != nullptr) {
     timeService->setTickSecondCallback([this]() {
@@ -422,7 +540,7 @@ void Bar::reload() {
   m_widgetFactory = std::make_unique<WidgetFactory>(
       *m_wayland, m_config->config(), m_notifications, m_tray, m_audio, m_upower, m_sysmon, m_powerProfiles, m_network,
       m_idleInhibitor, m_mpris, m_audioSpectrum, m_httpClient, m_weatherService, m_nightLight, m_themeService,
-      m_bluetooth, m_brightness, m_fileWatcher);
+      m_bluetooth, m_brightness, m_lockKeys, m_fileWatcher);
 
   if (recreateForOrder) {
     kLog.info("bar order changed; recreating layer-shell surfaces");
@@ -658,7 +776,8 @@ void Bar::setAttachedPanelGeometry(wl_output* output, std::optional<AttachedPane
 
   instance->attachedPanelGeometry = geometry;
   if (instance->surface != nullptr && instance->surface->width() > 0 && instance->surface->height() > 0) {
-    buildScene(*instance, instance->surface->width(), instance->surface->height());
+    applyBarShadowStyle(*instance, m_config->config().shell.shadow, static_cast<float>(instance->surface->width()),
+                        static_cast<float>(instance->surface->height()));
     instance->surface->requestRedraw();
   }
 }
@@ -763,8 +882,8 @@ void Bar::createInstance(const WaylandOutput& output, std::size_t barIndex, cons
   const bool isBottom = barConfig.position == "bottom";
   const bool isRight = barConfig.position == "right";
 
-  const std::int32_t mH = barConfig.marginH;
-  const std::int32_t mV = barConfig.marginV;
+  const std::int32_t mEnds = barConfig.marginEnds;
+  const std::int32_t mEdge = barConfig.marginEdge;
   const auto sb = shell::surface_shadow::bleed(barConfig.shadow, m_config->config().shell.shadow);
   const bool reserveExclusiveZone = barConfig.reserveSpace;
 
@@ -775,35 +894,37 @@ void Bar::createInstance(const WaylandOutput& output, std::size_t barIndex, cons
   std::int32_t exclusiveZone = reserveExclusiveZone ? 0 : -1;
 
   if (!vertical) {
-    mLeft = std::max(0, mH - sb.left);
-    mRight = std::max(0, mH - sb.right);
+    // Horizontal bar: ends inset = left/right, edge gap = top/bottom.
+    mLeft = std::max(0, mEnds - sb.left);
+    mRight = std::max(0, mEnds - sb.right);
     if (isBottom) {
-      mBottom = std::max(0, mV - sb.down);
-      surfH = static_cast<std::uint32_t>(sb.up + barConfig.thickness + std::min(mV, sb.down));
+      mBottom = std::max(0, mEdge - sb.down);
+      surfH = static_cast<std::uint32_t>(sb.up + barConfig.thickness + std::min(mEdge, sb.down));
       if (reserveExclusiveZone) {
-        exclusiveZone = barConfig.thickness + std::min(mV, sb.down);
+        exclusiveZone = barConfig.thickness + std::min(mEdge, sb.down);
       }
     } else {
-      mTop = std::max(0, mV - sb.up);
-      surfH = static_cast<std::uint32_t>(std::min(mV, sb.up) + barConfig.thickness + sb.down);
+      mTop = std::max(0, mEdge - sb.up);
+      surfH = static_cast<std::uint32_t>(std::min(mEdge, sb.up) + barConfig.thickness + sb.down);
       if (reserveExclusiveZone) {
-        exclusiveZone = std::min(mV, sb.up) + barConfig.thickness;
+        exclusiveZone = std::min(mEdge, sb.up) + barConfig.thickness;
       }
     }
   } else {
-    mTop = std::max(0, mV - sb.up);
-    mBottom = std::max(0, mV - sb.down);
+    // Vertical bar: ends inset = top/bottom, edge gap = left/right.
+    mTop = std::max(0, mEnds - sb.up);
+    mBottom = std::max(0, mEnds - sb.down);
     if (isRight) {
-      mRight = std::max(0, mH - sb.right);
-      surfW = static_cast<std::uint32_t>(sb.left + barConfig.thickness + std::min(mH, sb.right));
+      mRight = std::max(0, mEdge - sb.right);
+      surfW = static_cast<std::uint32_t>(sb.left + barConfig.thickness + std::min(mEdge, sb.right));
       if (reserveExclusiveZone) {
-        exclusiveZone = barConfig.thickness + std::min(mH, sb.right);
+        exclusiveZone = barConfig.thickness + std::min(mEdge, sb.right);
       }
     } else {
-      mLeft = std::max(0, mH - sb.left);
-      surfW = static_cast<std::uint32_t>(std::min(mH, sb.left) + barConfig.thickness + sb.right);
+      mLeft = std::max(0, mEdge - sb.left);
+      surfW = static_cast<std::uint32_t>(std::min(mEdge, sb.left) + barConfig.thickness + sb.right);
       if (reserveExclusiveZone) {
-        exclusiveZone = std::min(mH, sb.left) + barConfig.thickness;
+        exclusiveZone = std::min(mEdge, sb.left) + barConfig.thickness;
       }
     }
   }
@@ -885,10 +1006,15 @@ void Bar::populateWidgets(BarInstance& instance) {
 }
 
 void Bar::attachWidgetsToSections(BarInstance& instance) {
-  auto attach = [&](std::vector<std::unique_ptr<Widget>>& widgets, Flex* section) {
+  const bool isVertical = instance.barConfig.position == "left" || instance.barConfig.position == "right";
+  const float widgetSpacing = static_cast<float>(instance.barConfig.widgetSpacing);
+
+  auto attach = [&](std::vector<std::unique_ptr<Widget>>& widgets, std::vector<BarCapsuleRun>& capsuleRuns,
+                    Flex* section) {
     if (section == nullptr) {
       return;
     }
+
     for (auto& widget : widgets) {
       widget->setAnimationManager(&instance.animations);
       widget->setUpdateCallback([surface = instance.surface.get()]() {
@@ -901,43 +1027,165 @@ void Bar::attachWidgetsToSections(BarInstance& instance) {
           surface->requestRedraw();
         }
       });
-      widget->setPanelToggleCallback([inst = &instance](std::string_view panelId, std::string_view context) {
+      widget->setFrameTickRequestCallback([surface = instance.surface.get()]() {
+        if (surface != nullptr) {
+          surface->requestFrameTick();
+        }
+      });
+      widget->setPanelToggleCallback([this, inst = &instance](std::string_view panelId, std::string_view context,
+                                                              std::optional<float> anchorSurfaceX,
+                                                              std::optional<float> anchorSurfaceY) {
+        float anchorX = inst->lastPointerSx;
+        float anchorY = inst->lastPointerSy;
+        if (anchorSurfaceX.has_value()) {
+          anchorX = *anchorSurfaceX;
+        }
+        if (anchorSurfaceY.has_value()) {
+          anchorY = *anchorSurfaceY;
+        }
+        if (m_wayland != nullptr && inst->output != nullptr) {
+          if (const auto* out = m_wayland->findOutputByWl(inst->output);
+              out != nullptr && out->logicalWidth > 0 && out->logicalHeight > 0) {
+            const auto [surfaceX, surfaceY] = surfaceOriginForOutputLocal(*inst, *out);
+            anchorX += surfaceX;
+            anchorY += surfaceY;
+          }
+        }
         PanelManager::instance().togglePanel(
             std::string(panelId),
-            PanelOpenRequest{.output = inst->output, .context = context, .sourceBarName = inst->barConfig.name});
+            PanelOpenRequest{.output = inst->output,
+                             .anchorX = anchorX,
+                             .anchorY = anchorY,
+                             .hasExplicitAnchor = anchorSurfaceX.has_value() || anchorSurfaceY.has_value(),
+                             .context = context,
+                             .sourceBarName = inst->barConfig.name});
       });
       widget->create();
+    }
+
+    capsuleRuns.clear();
+
+    auto addPlainWidget = [&](Widget& widget) {
+      widget.setBarCapsuleScene(nullptr, nullptr);
+      section->addChild(widget.releaseRoot());
+    };
+
+    auto addSingleCapsule = [&](Widget& widget) {
+      const auto& cap = widget.barCapsuleSpec();
+      auto shell = std::make_unique<Node>();
+      Node* shellPtr = shell.get();
+      auto capsuleBg = std::make_unique<Box>();
+      Box* bgPtr = capsuleBg.get();
+      capsuleBg->setFill(withOpacity(cap.fill, cap.opacity));
+      const float scale = widget.contentScale();
+      if (cap.border.has_value()) {
+        capsuleBg->setBorder(*cap.border, Style::borderWidth * scale);
+      } else {
+        capsuleBg->clearBorder();
+      }
+      capsuleBg->setZIndex(-1);
+      shellPtr->addChild(std::move(capsuleBg));
+      shellPtr->addChild(widget.releaseRoot());
+      widget.setBarCapsuleScene(shellPtr, bgPtr);
+      capsuleRuns.push_back(BarCapsuleRun{
+          .shell = shellPtr,
+          .bg = bgPtr,
+          .container = nullptr,
+          .content = widget.root(),
+          .spec = cap,
+          .contentScale = widget.contentScale(),
+          .allowCircularSizing = true,
+          .widgets = {&widget},
+      });
+      section->addChild(std::move(shell));
+    };
+
+    auto canJoinCapsuleGroup = [](const Widget& first, const Widget& next) {
+      const auto& firstSpec = first.barCapsuleSpec();
+      const auto& nextSpec = next.barCapsuleSpec();
+      return firstSpec.enabled && nextSpec.enabled && !first.isAnchor() && !next.isAnchor() &&
+             !firstSpec.group.empty() && firstSpec == nextSpec && first.contentScale() == next.contentScale();
+    };
+
+    std::size_t index = 0;
+    while (index < widgets.size()) {
+      auto& widget = widgets[index];
       if (widget->root() == nullptr) {
+        ++index;
         continue;
       }
-      if (widget->barCapsuleSpec().enabled) {
-        const auto& cap = widget->barCapsuleSpec();
-        auto shell = std::make_unique<Node>();
-        Node* shellPtr = shell.get();
-        auto capsuleBg = std::make_unique<Box>();
-        Box* bgPtr = capsuleBg.get();
-        capsuleBg->setFill(withOpacity(cap.fill, cap.opacity));
-        const float scale = widget->contentScale();
-        if (cap.border.has_value()) {
-          capsuleBg->setBorder(*cap.border, Style::borderWidth * scale);
-        } else {
-          capsuleBg->clearBorder();
-        }
-        capsuleBg->setZIndex(-1);
-        shellPtr->addChild(std::move(capsuleBg));
-        shellPtr->addChild(widget->releaseRoot());
-        widget->setBarCapsuleScene(shellPtr, bgPtr);
-        section->addChild(std::move(shell));
-      } else {
-        widget->setBarCapsuleScene(nullptr, nullptr);
-        section->addChild(widget->releaseRoot());
+
+      const auto& cap = widget->barCapsuleSpec();
+      if (!cap.enabled) {
+        addPlainWidget(*widget);
+        ++index;
+        continue;
       }
+
+      if (widget->isAnchor() || cap.group.empty()) {
+        addSingleCapsule(*widget);
+        ++index;
+        continue;
+      }
+
+      std::size_t runEnd = index + 1;
+      while (runEnd < widgets.size() && widgets[runEnd] != nullptr && widgets[runEnd]->root() != nullptr &&
+             canJoinCapsuleGroup(*widget, *widgets[runEnd])) {
+        ++runEnd;
+      }
+
+      if (runEnd - index < 2) {
+        addSingleCapsule(*widget);
+        ++index;
+        continue;
+      }
+
+      auto shell = std::make_unique<Node>();
+      Node* shellPtr = shell.get();
+      auto capsuleBg = std::make_unique<Box>();
+      Box* bgPtr = capsuleBg.get();
+      capsuleBg->setFill(withOpacity(cap.fill, cap.opacity));
+      const float scale = widget->contentScale();
+      if (cap.border.has_value()) {
+        capsuleBg->setBorder(*cap.border, Style::borderWidth * scale);
+      } else {
+        capsuleBg->clearBorder();
+      }
+      capsuleBg->setZIndex(-1);
+      shellPtr->addChild(std::move(capsuleBg));
+
+      auto inner = std::make_unique<Flex>();
+      Flex* innerPtr = inner.get();
+      innerPtr->setDirection(isVertical ? FlexDirection::Vertical : FlexDirection::Horizontal);
+      innerPtr->setGap(widgetSpacing);
+      innerPtr->setAlign(FlexAlign::Center);
+      shellPtr->addChild(std::move(inner));
+
+      BarCapsuleRun run;
+      run.shell = shellPtr;
+      run.bg = bgPtr;
+      run.container = innerPtr;
+      run.content = innerPtr;
+      run.spec = cap;
+      run.contentScale = widget->contentScale();
+      run.allowCircularSizing = false;
+
+      for (std::size_t memberIndex = index; memberIndex < runEnd; ++memberIndex) {
+        auto& member = widgets[memberIndex];
+        member->setBarCapsuleScene(shellPtr, bgPtr);
+        run.widgets.push_back(member.get());
+        innerPtr->addChild(member->releaseRoot());
+      }
+
+      capsuleRuns.push_back(std::move(run));
+      section->addChild(std::move(shell));
+      index = runEnd;
     }
   };
 
-  attach(instance.startWidgets, instance.startSection);
-  attach(instance.centerWidgets, instance.centerSection);
-  attach(instance.endWidgets, instance.endSection);
+  attach(instance.startWidgets, instance.startCapsuleRuns, instance.startSection);
+  attach(instance.centerWidgets, instance.centerCapsuleRuns, instance.centerSection);
+  attach(instance.endWidgets, instance.endCapsuleRuns, instance.endSection);
 }
 
 void Bar::rebuildInstanceContents(BarInstance& instance, const BarConfig& newConfig) {
@@ -964,6 +1212,9 @@ void Bar::rebuildInstanceContents(BarInstance& instance, const BarConfig& newCon
   instance.startWidgets.clear();
   instance.centerWidgets.clear();
   instance.endWidgets.clear();
+  instance.startCapsuleRuns.clear();
+  instance.centerCapsuleRuns.clear();
+  instance.endCapsuleRuns.clear();
 
   // Refresh section-level layout knobs that may have changed (gap; direction
   // doesn't change because position is part of the surface-fields gate).
@@ -1237,58 +1488,7 @@ void Bar::buildScene(BarInstance& instance, std::uint32_t width, std::uint32_t h
     instance.contentClip->setSize(barAreaW, barAreaH);
   }
 
-  // Shadow — same shape as the bar, offset by (shadowOffsetX, shadowOffsetY), rendered with large
-  // SDF softness to produce a Gaussian-like blurred drop shadow. Rendered at z=-1 so the bar sits
-  // on top and hides the shadow's opaque interior.
-  if (instance.shadow != nullptr) {
-    const float bgOpacity = std::clamp(instance.barConfig.backgroundOpacity, 0.0f, 1.0f);
-    const float shadowX = barAreaX + shadowOffsetX;
-    const float shadowY = barAreaY + shadowOffsetY;
-    RoundedRectStyle shadowStyle =
-        shell::surface_shadow::style(shadowConfig, bgOpacity, shell::surface_shadow::Shape{.radius = barRadii});
-    const bool panelShadowExclusion = instance.attachedPanelGeometry.has_value() &&
-                                      instance.attachedPanelGeometry->width > 0.0f &&
-                                      instance.attachedPanelGeometry->height > 0.0f;
-    if (panelShadowExclusion) {
-      const auto& attached = *instance.attachedPanelGeometry;
-      const float convexRadius = std::max(0.0f, attached.cornerRadius);
-      const float bulgeRadius = std::max(0.0f, attached.bulgeRadius);
-      const std::string_view barPosition = instance.barConfig.position;
-      const auto corners = attached_panel::cornerShapes(barPosition);
-      const auto pickRadius = [&](CornerShape shape) {
-        return shape == CornerShape::Concave ? bulgeRadius : convexRadius;
-      };
-      shadowStyle.shadowExclusion = true;
-      shadowStyle.shadowExclusionOffsetX = shadowX - attached.x;
-      shadowStyle.shadowExclusionOffsetY = shadowY - attached.y;
-      shadowStyle.shadowExclusionWidth = attached.width;
-      shadowStyle.shadowExclusionHeight = attached.height;
-      shadowStyle.shadowExclusionCorners = corners;
-      shadowStyle.shadowExclusionLogicalInset = attached_panel::logicalInset(barPosition, bulgeRadius);
-      shadowStyle.shadowExclusionRadius =
-          Radii{pickRadius(corners.tl), pickRadius(corners.tr), pickRadius(corners.br), pickRadius(corners.bl)};
-    }
-
-    auto configureShadow = [&](Box* node, float x, float y) {
-      if (node == nullptr) {
-        return;
-      }
-      node->setStyle(shadowStyle);
-      node->setZIndex(-1);
-      node->setPosition(x, y);
-      node->setSize(barAreaW, barAreaH);
-    };
-
-    instance.shadow->setVisible(true);
-    configureShadow(instance.shadow, shadowX, shadowY);
-
-    if (instance.shadowLeftClip != nullptr) {
-      instance.shadowLeftClip->setVisible(false);
-    }
-    if (instance.shadowRightClip != nullptr) {
-      instance.shadowRightClip->setVisible(false);
-    }
-  }
+  applyBarShadowStyle(instance, shadowConfig, w, h);
 
   layoutBarSections(instance, *renderer, barAreaW, barAreaH, padding, isVertical);
 
@@ -1349,8 +1549,7 @@ void Bar::updateWidgets(BarInstance& instance) {
   const auto h = static_cast<float>(instance.surface->height());
   const float padding = static_cast<float>(instance.barConfig.padding);
   const float barThickness = static_cast<float>(instance.barConfig.thickness);
-  const float marginH = static_cast<float>(instance.barConfig.marginH);
-  const float marginV = static_cast<float>(instance.barConfig.marginV);
+  const float marginEnds = static_cast<float>(instance.barConfig.marginEnds);
   const bool isVertical = (instance.barConfig.position == "left" || instance.barConfig.position == "right");
   const auto sbi = shell::surface_shadow::bleed(instance.barConfig.shadow, m_config->config().shell.shadow);
   const float bleedLeft = static_cast<float>(sbi.left);
@@ -1359,12 +1558,12 @@ void Bar::updateWidgets(BarInstance& instance) {
   const float bleedDown = static_cast<float>(sbi.down);
   float barAreaW, barAreaH;
   if (isVertical) {
-    const float barAreaY = std::min(marginV, bleedUp);
+    const float barAreaY = std::min(marginEnds, bleedUp);
     barAreaW = barThickness;
-    barAreaH = h - barAreaY - std::min(marginV, bleedDown);
+    barAreaH = h - barAreaY - std::min(marginEnds, bleedDown);
   } else {
-    const float barAreaX = std::min(marginH, bleedLeft);
-    barAreaW = w - barAreaX - std::min(marginH, bleedRight);
+    const float barAreaX = std::min(marginEnds, bleedLeft);
+    barAreaW = w - barAreaX - std::min(marginEnds, bleedRight);
     barAreaH = barThickness;
   }
 
@@ -1405,8 +1604,7 @@ void Bar::prepareFrame(BarInstance& instance, bool needsUpdate, bool needsLayout
   const auto h = static_cast<float>(instance.surface->height());
   const float padding = static_cast<float>(instance.barConfig.padding);
   const float barThickness = static_cast<float>(instance.barConfig.thickness);
-  const float marginH = static_cast<float>(instance.barConfig.marginH);
-  const float marginV = static_cast<float>(instance.barConfig.marginV);
+  const float marginEnds = static_cast<float>(instance.barConfig.marginEnds);
   const bool isVertical = (instance.barConfig.position == "left" || instance.barConfig.position == "right");
   const auto sbi = shell::surface_shadow::bleed(instance.barConfig.shadow, m_config->config().shell.shadow);
   const float bleedLeft = static_cast<float>(sbi.left);
@@ -1416,12 +1614,12 @@ void Bar::prepareFrame(BarInstance& instance, bool needsUpdate, bool needsLayout
   float barAreaW = 0.0f;
   float barAreaH = 0.0f;
   if (isVertical) {
-    const float barAreaY = std::min(marginV, bleedUp);
+    const float barAreaY = std::min(marginEnds, bleedUp);
     barAreaW = barThickness;
-    barAreaH = h - barAreaY - std::min(marginV, bleedDown);
+    barAreaH = h - barAreaY - std::min(marginEnds, bleedDown);
   } else {
-    const float barAreaX = std::min(marginH, bleedLeft);
-    barAreaW = w - barAreaX - std::min(marginH, bleedRight);
+    const float barAreaX = std::min(marginEnds, bleedLeft);
+    barAreaW = w - barAreaX - std::min(marginEnds, bleedRight);
     barAreaH = barThickness;
   }
 
@@ -1489,7 +1687,7 @@ bool Bar::onPointerEvent(const PointerEvent& event) {
     case PointerEvent::Type::Axis:
       if (event.type == PointerEvent::Type::Button && event.button == BTN_RIGHT && event.state == 1) {
         auto& panelManager = PanelManager::instance();
-        if (panelManager.isOpen() && panelManager.activePanelId() == "control-center") {
+        if (panelManager.isOpenPanel("control-center")) {
           panelManager.closePanel();
         } else {
           panelManager.openPanel("control-center", PanelOpenRequest{.output = targetInstance->output,
@@ -1510,6 +1708,8 @@ bool Bar::onPointerEvent(const PointerEvent& event) {
       break;
     }
     m_hoveredInstance = it->second;
+    m_hoveredInstance->lastPointerSx = static_cast<float>(event.sx);
+    m_hoveredInstance->lastPointerSy = static_cast<float>(event.sy);
     m_hoveredInstance->pointerInside = true;
     m_hoveredInstance->inputDispatcher.pointerEnter(static_cast<float>(event.sx), static_cast<float>(event.sy),
                                                     event.serial);
@@ -1546,12 +1746,16 @@ bool Bar::onPointerEvent(const PointerEvent& event) {
   case PointerEvent::Type::Motion: {
     if (m_hoveredInstance == nullptr)
       break;
+    m_hoveredInstance->lastPointerSx = static_cast<float>(event.sx);
+    m_hoveredInstance->lastPointerSy = static_cast<float>(event.sy);
     m_hoveredInstance->inputDispatcher.pointerMotion(static_cast<float>(event.sx), static_cast<float>(event.sy), 0);
     break;
   }
   case PointerEvent::Type::Button: {
     if (m_hoveredInstance == nullptr)
       break;
+    m_hoveredInstance->lastPointerSx = static_cast<float>(event.sx);
+    m_hoveredInstance->lastPointerSy = static_cast<float>(event.sy);
     bool pressed = (event.state == 1); // WL_POINTER_BUTTON_STATE_PRESSED
     consumed = m_hoveredInstance->inputDispatcher.pointerButton(static_cast<float>(event.sx),
                                                                 static_cast<float>(event.sy), event.button, pressed);
@@ -1563,7 +1767,7 @@ bool Bar::onPointerEvent(const PointerEvent& event) {
                                     pointInsideNode(m_hoveredInstance->endSection, sx, sy);
       if (!insideAnySection) {
         auto& panelManager = PanelManager::instance();
-        if (panelManager.isOpen() && panelManager.activePanelId() == "control-center") {
+        if (panelManager.isOpenPanel("control-center")) {
           panelManager.closePanel();
         } else {
           panelManager.openPanel("control-center",
@@ -1579,6 +1783,8 @@ bool Bar::onPointerEvent(const PointerEvent& event) {
   case PointerEvent::Type::Axis: {
     if (m_hoveredInstance == nullptr)
       break;
+    m_hoveredInstance->lastPointerSx = static_cast<float>(event.sx);
+    m_hoveredInstance->lastPointerSy = static_cast<float>(event.sy);
     m_hoveredInstance->inputDispatcher.pointerAxis(static_cast<float>(event.sx), static_cast<float>(event.sy),
                                                    event.axis, event.axisSource, event.axisValue, event.axisDiscrete,
                                                    event.axisValue120, event.axisLines);

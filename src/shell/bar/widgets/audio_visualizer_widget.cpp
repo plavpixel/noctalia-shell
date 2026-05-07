@@ -5,13 +5,14 @@
 #include "render/scene/input_area.h"
 #include "ui/controls/audio_spectrum.h"
 #include "ui/palette.h"
+#include "ui/style.h"
 
 #include <algorithm>
 #include <memory>
 
-AudioVisualizerWidget::AudioVisualizerWidget(PipeWireSpectrum* spectrum, float width, float height, int bands,
-                                             bool mirrored, ColorSpec lowColor, ColorSpec highColor, bool showWhenIdle)
-    : m_spectrum(spectrum), m_width(width), m_height(height), m_bands(std::max(1, bands)), m_mirrored(mirrored),
+AudioVisualizerWidget::AudioVisualizerWidget(PipeWireSpectrum* spectrum, float width, int bands, bool mirrored,
+                                             ColorSpec lowColor, ColorSpec highColor, bool showWhenIdle)
+    : m_spectrum(spectrum), m_width(width), m_bands(std::max(1, bands)), m_mirrored(mirrored),
       m_showWhenIdle(showWhenIdle), m_lowColor(lowColor), m_highColor(highColor) {}
 
 AudioVisualizerWidget::~AudioVisualizerWidget() {
@@ -35,7 +36,7 @@ void AudioVisualizerWidget::create() {
   if (m_spectrum != nullptr) {
     m_listenerId = m_spectrum->addChangeListener(m_bands, [this]() {
       m_pendingSpectrumUpdate = true;
-      requestRedraw();
+      requestFrameTick();
     });
   }
 
@@ -43,8 +44,7 @@ void AudioVisualizerWidget::create() {
 }
 
 void AudioVisualizerWidget::doLayout(Renderer& renderer, float containerWidth, float containerHeight) {
-  m_renderer = &renderer;
-  if (root() == nullptr || m_visualizer == nullptr) {
+  if (root() == nullptr) {
     return;
   }
   applyVisibility();
@@ -54,18 +54,20 @@ void AudioVisualizerWidget::doLayout(Renderer& renderer, float containerWidth, f
   }
 
   m_isVertical = containerHeight > containerWidth;
-  m_visualizer->setOrientation(m_isVertical ? AudioSpectrumOrientation::Vertical
-                                            : AudioSpectrumOrientation::Horizontal);
-  const float width = std::max(1.0f, (m_isVertical ? m_height : m_width) * m_contentScale);
-  const float height = std::max(1.0f, (m_isVertical ? m_width : m_height) * m_contentScale);
-  m_visualizer->setPosition(0.0f, 0.0f);
-  m_visualizer->setSize(width, height);
-  m_visualizer->layout(renderer);
+  const auto refMetrics = renderer.measureFont(Style::fontSizeBody * m_contentScale);
+  const float bodyExtent = std::round(refMetrics.bottom - refMetrics.top);
+  const float width = std::max(1.0f, m_isVertical ? bodyExtent : m_width * m_contentScale);
+  const float height = std::max(1.0f, m_isVertical ? m_width * m_contentScale : bodyExtent);
+  if (m_visualizer != nullptr) {
+    m_visualizer->setOrientation(m_isVertical ? AudioSpectrumOrientation::Vertical
+                                              : AudioSpectrumOrientation::Horizontal);
+    m_visualizer->setPosition(0.0f, 0.0f);
+    m_visualizer->setSize(width, height);
+  }
   root()->setSize(width, height);
 }
 
-void AudioVisualizerWidget::doUpdate(Renderer& renderer) {
-  m_renderer = &renderer;
+void AudioVisualizerWidget::doUpdate(Renderer& /*renderer*/) {
   if (applyVisibility()) {
     if (root() != nullptr) {
       root()->markLayoutDirty();
@@ -87,14 +89,12 @@ void AudioVisualizerWidget::onFrameTick(float deltaMs) {
   }
   syncSpectrum();
   m_visualizer->tick(deltaMs);
-  if (m_renderer != nullptr) {
-    m_visualizer->layout(*m_renderer);
-  }
 }
 
 bool AudioVisualizerWidget::needsFrameTick() const {
-  return m_visualizer != nullptr &&
-         (m_pendingSpectrumUpdate || !m_visualizer->converged() || shouldBeVisible() != m_visible);
+  // Bar visualizers redraw the full bar surface. Let PipeWire/FFT updates set
+  // the cadence instead of chasing smoothing at the output refresh rate.
+  return m_visualizer != nullptr && (m_pendingSpectrumUpdate || shouldBeVisible() != m_visible);
 }
 
 void AudioVisualizerWidget::syncSpectrum() {
@@ -104,9 +104,6 @@ void AudioVisualizerWidget::syncSpectrum() {
 
   m_visualizer->setValues(m_spectrum->values(m_listenerId));
   m_pendingSpectrumUpdate = false;
-  if (m_renderer != nullptr) {
-    m_visualizer->layout(*m_renderer);
-  }
 }
 
 bool AudioVisualizerWidget::shouldBeVisible() const {
@@ -114,7 +111,7 @@ bool AudioVisualizerWidget::shouldBeVisible() const {
 }
 
 bool AudioVisualizerWidget::applyVisibility() {
-  if (root() == nullptr || m_visualizer == nullptr) {
+  if (root() == nullptr) {
     return false;
   }
   const bool nextVisible = shouldBeVisible();
@@ -123,7 +120,9 @@ bool AudioVisualizerWidget::applyVisibility() {
   }
   m_visible = nextVisible;
   root()->setVisible(m_visible);
-  m_visualizer->setVisible(m_visible);
+  if (m_visualizer != nullptr) {
+    m_visualizer->setVisible(m_visible);
+  }
   if (!m_visible) {
     root()->setSize(0.0f, 0.0f);
   }

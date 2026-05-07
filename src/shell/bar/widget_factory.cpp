@@ -39,8 +39,7 @@
 #include "shell/bar/widgets/wallpaper_widget.h"
 #include "shell/bar/widgets/weather_widget.h"
 #include "shell/bar/widgets/workspaces_widget.h"
-#include "system/distro_info.h"
-#include "system/icon_resolver.h"
+#include "system/lock_keys_service.h"
 #include "system/system_monitor_service.h"
 #include "system/weather_service.h"
 #include "theme/theme_service.h"
@@ -48,22 +47,31 @@
 #include "wayland/wayland_connection.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <functional>
 #include <string>
 
 namespace {
   constexpr Logger kLog("shell");
 
-  std::string resolveDistroLogo(IconResolver& iconResolver) {
-    if (const auto info = DistroDetector::detect(); info.has_value()) {
-      for (const auto& name : distroLogoIconNames(*info)) {
-        const auto& resolved = iconResolver.resolve(name);
-        if (!resolved.empty()) {
-          return resolved;
-        }
-      }
+  ActiveWindowTitleScrollMode parseActiveWindowTitleScrollMode(std::string_view value) {
+    if (value == "always") {
+      return ActiveWindowTitleScrollMode::Always;
     }
+    if (value == "on_hover" || value == "hover") {
+      return ActiveWindowTitleScrollMode::OnHover;
+    }
+    return ActiveWindowTitleScrollMode::None;
+  }
 
-    return {};
+  MediaTitleScrollMode parseMediaTitleScrollMode(std::string_view value) {
+    if (value == "always") {
+      return MediaTitleScrollMode::Always;
+    }
+    if (value == "on_hover" || value == "hover") {
+      return MediaTitleScrollMode::OnHover;
+    }
+    return MediaTitleScrollMode::None;
   }
 } // namespace
 
@@ -73,12 +81,12 @@ WidgetFactory::WidgetFactory(WaylandConnection& wayland, const Config& config, N
                              IdleInhibitor* idleInhibitor, MprisService* mpris, PipeWireSpectrum* audioSpectrum,
                              HttpClient* httpClient, WeatherService* weather, NightLightManager* nightLight,
                              noctalia::theme::ThemeService* themeService, BluetoothService* bluetooth,
-                             BrightnessService* brightness, FileWatcher* fileWatcher)
+                             BrightnessService* brightness, LockKeysService* lockKeys, FileWatcher* fileWatcher)
     : m_wayland(wayland), m_config(config), m_notifications(notifications), m_tray(tray), m_audio(audio),
       m_upower(upower), m_sysmon(sysmon), m_powerProfiles(powerProfiles), m_network(network),
       m_idleInhibitor(idleInhibitor), m_mpris(mpris), m_audioSpectrum(audioSpectrum), m_httpClient(httpClient),
       m_weather(weather), m_nightLight(nightLight), m_themeService(themeService), m_bluetooth(bluetooth),
-      m_brightness(brightness), m_fileWatcher(fileWatcher) {}
+      m_brightness(brightness), m_lockKeys(lockKeys), m_fileWatcher(fileWatcher) {}
 
 WidgetFactory::~WidgetFactory() = default;
 
@@ -96,26 +104,28 @@ std::unique_ptr<Widget> WidgetFactory::create(const std::string& name, wl_output
   }
 
   if (type == "active_window") {
-    const float maxTitleWidth = static_cast<float>(wc != nullptr ? wc->getDouble("max_length", 260.0) : 260.0);
+    const float maxWidth = static_cast<float>(wc != nullptr ? wc->getDouble("max_length", 260.0) : 260.0);
+    const float minWidth = static_cast<float>(wc != nullptr ? wc->getDouble("min_length", 80.0) : 80.0);
     const float iconSize =
         static_cast<float>(wc != nullptr ? wc->getDouble("icon_size", Style::fontSizeBody) : Style::fontSizeBody);
-    auto widget = std::make_unique<ActiveWindowWidget>(m_wayland, maxTitleWidth, iconSize);
+    const std::string titleScroll = wc != nullptr ? wc->getString("title_scroll", "none") : std::string("none");
+    auto widget = std::make_unique<ActiveWindowWidget>(m_wayland, maxWidth, minWidth, iconSize,
+                                                       parseActiveWindowTitleScrollMode(titleScroll));
     widget->setContentScale(contentScale);
     return widget;
   }
 
   if (type == "audio_visualizer") {
     const float width = static_cast<float>(wc != nullptr ? wc->getDouble("width", 56.0) : 56.0);
-    const float height = static_cast<float>(wc != nullptr ? wc->getDouble("height", 16.0) : 16.0);
     const int bands = static_cast<int>(wc != nullptr ? wc->getInt("bands", 16) : 16);
-    const bool mirrored = wc != nullptr ? wc->getBool("mirrored", false) : false;
+    const bool mirrored = wc != nullptr ? wc->getBool("mirrored", true) : true;
     const bool showWhenIdle = wc != nullptr ? wc->getBool("show_when_idle", false) : false;
     const ColorSpec lowColor =
         colorSpecFromConfigString(wc != nullptr ? wc->getString("low_color", "primary") : std::string("primary"));
     const ColorSpec highColor =
         colorSpecFromConfigString(wc != nullptr ? wc->getString("high_color", "primary") : std::string("primary"));
-    auto widget = std::make_unique<AudioVisualizerWidget>(m_audioSpectrum, width, height, bands, mirrored, lowColor,
-                                                          highColor, showWhenIdle);
+    auto widget = std::make_unique<AudioVisualizerWidget>(m_audioSpectrum, width, bands, mirrored, lowColor, highColor,
+                                                          showWhenIdle);
     widget->setContentScale(contentScale);
     return widget;
   }
@@ -164,13 +174,7 @@ std::unique_ptr<Widget> WidgetFactory::create(const std::string& name, wl_output
       barGlyph = "search";
     }
 
-    std::string logoPath;
-    if (wc != nullptr && wc->getBool("use_distro_logo", false)) {
-      if (!m_iconResolver) {
-        m_iconResolver = std::make_unique<IconResolver>();
-      }
-      logoPath = resolveDistroLogo(*m_iconResolver);
-    }
+    std::string logoPath = wc != nullptr ? wc->getString("custom_image", "") : std::string{};
 
     auto widget = std::make_unique<ControlCenterWidget>(output, std::move(barGlyph), std::move(logoPath));
     widget->setContentScale(contentScale);
@@ -198,13 +202,7 @@ std::unique_ptr<Widget> WidgetFactory::create(const std::string& name, wl_output
       barGlyph = "search";
     }
 
-    std::string logoPath;
-    if (wc != nullptr && wc->getBool("use_distro_logo", false)) {
-      if (!m_iconResolver) {
-        m_iconResolver = std::make_unique<IconResolver>();
-      }
-      logoPath = resolveDistroLogo(*m_iconResolver);
-    }
+    std::string logoPath = wc != nullptr ? wc->getString("custom_image", "") : std::string{};
 
     auto widget = std::make_unique<LauncherWidget>(output, std::move(barGlyph), std::move(logoPath));
     widget->setContentScale(contentScale);
@@ -212,13 +210,16 @@ std::unique_ptr<Widget> WidgetFactory::create(const std::string& name, wl_output
   }
 
   if (type == "lock_keys") {
+    if (m_lockKeys == nullptr) {
+      return nullptr;
+    }
     const bool showCaps = wc != nullptr ? wc->getBool("show_caps_lock", true) : true;
     const bool showNum = wc != nullptr ? wc->getBool("show_num_lock", true) : true;
     const bool showScroll = wc != nullptr ? wc->getBool("show_scroll_lock", false) : false;
     const bool hideWhenOff = wc != nullptr ? wc->getBool("hide_when_off", false) : false;
     const std::string display = wc != nullptr ? wc->getString("display", "short") : std::string("short");
 
-    auto widget = std::make_unique<LockKeysWidget>(m_wayland, showCaps, showNum, showScroll, hideWhenOff,
+    auto widget = std::make_unique<LockKeysWidget>(m_lockKeys, showCaps, showNum, showScroll, hideWhenOff,
                                                    LockKeysWidget::parseDisplayMode(display));
     widget->setContentScale(contentScale);
     return widget;
@@ -226,8 +227,11 @@ std::unique_ptr<Widget> WidgetFactory::create(const std::string& name, wl_output
 
   if (type == "media") {
     const float maxWidth = static_cast<float>(wc != nullptr ? wc->getDouble("max_length", 220.0) : 220.0);
+    const float minWidth = static_cast<float>(wc != nullptr ? wc->getDouble("min_length", 80.0) : 80.0);
     const float artSize = static_cast<float>(wc != nullptr ? wc->getDouble("art_size", 16.0) : 16.0);
-    auto widget = std::make_unique<MediaWidget>(m_mpris, m_httpClient, output, maxWidth, artSize);
+    const std::string titleScroll = wc != nullptr ? wc->getString("title_scroll", "none") : std::string("none");
+    auto widget = std::make_unique<MediaWidget>(m_mpris, m_httpClient, output, maxWidth, minWidth, artSize,
+                                                parseMediaTitleScrollMode(titleScroll));
     widget->setContentScale(contentScale);
     return widget;
   }
@@ -340,14 +344,21 @@ std::unique_ptr<Widget> WidgetFactory::create(const std::string& name, wl_output
 
   if (type == "tray") {
     const auto hiddenItems = wc != nullptr ? wc->getStringList("hidden") : std::vector<std::string>{};
-    auto widget = std::make_unique<TrayWidget>(m_tray, hiddenItems);
+    const auto pinnedItems = wc != nullptr ? wc->getStringList("pinned") : std::vector<std::string>{};
+    const bool drawer = wc != nullptr ? wc->getBool("drawer", false) : false;
+    const std::size_t drawerColumns =
+        static_cast<std::size_t>(std::clamp<std::int64_t>(wc != nullptr ? wc->getInt("drawer_columns", 3) : 3, 1, 5));
+    auto widget = std::make_unique<TrayWidget>(m_tray, hiddenItems, pinnedItems, drawer, std::function<void()>{},
+                                               barPosition, false, drawerColumns);
     widget->setContentScale(contentScale);
     return widget;
   }
 
   if (type == "volume") {
     const bool showLabel = wc != nullptr ? wc->getBool("show_label", true) : true;
-    auto widget = std::make_unique<VolumeWidget>(m_audio, output, showLabel);
+    const std::string target = wc != nullptr ? wc->getString("device", "output") : std::string("output");
+    const auto volumeTarget = target == "input" ? VolumeWidgetTarget::Input : VolumeWidgetTarget::Output;
+    auto widget = std::make_unique<VolumeWidget>(m_audio, output, showLabel, volumeTarget);
     widget->setContentScale(contentScale);
     return widget;
   }
@@ -372,6 +383,12 @@ std::unique_ptr<Widget> WidgetFactory::create(const std::string& name, wl_output
 
   if (type == "workspaces") {
     const std::string display = wc != nullptr ? wc->getString("display", "id") : std::string("id");
+    const ColorSpec focusedColor =
+        colorSpecFromConfigString(wc != nullptr ? wc->getString("focused_color", "primary") : std::string("primary"));
+    const ColorSpec occupiedColor = colorSpecFromConfigString(
+        wc != nullptr ? wc->getString("occupied_color", "secondary") : std::string("secondary"));
+    const ColorSpec emptyColor =
+        colorSpecFromConfigString(wc != nullptr ? wc->getString("empty_color", "secondary") : std::string("secondary"));
     WorkspacesWidget::DisplayMode displayMode = WorkspacesWidget::DisplayMode::Id;
     if (display == "id") {
       displayMode = WorkspacesWidget::DisplayMode::Id;
@@ -380,7 +397,8 @@ std::unique_ptr<Widget> WidgetFactory::create(const std::string& name, wl_output
     } else if (display == "none") {
       displayMode = WorkspacesWidget::DisplayMode::None;
     }
-    auto widget = std::make_unique<WorkspacesWidget>(m_wayland, output, displayMode);
+    auto widget =
+        std::make_unique<WorkspacesWidget>(m_wayland, output, displayMode, focusedColor, occupiedColor, emptyColor);
     widget->setContentScale(contentScale);
     return widget;
   }

@@ -21,6 +21,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <wayland-client-protocol.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
 namespace {
@@ -125,7 +126,6 @@ Input::Input() {
   label->setFontSize(m_fontSize);
   label->setMaxLines(1);
   label->setColor(colorSpecFromRole(ColorRole::OnSurface));
-  label->setStableBaseline(true);
   m_label = static_cast<Label*>(m_textViewport->addChild(std::move(label)));
 
   // 2: cursor
@@ -215,10 +215,13 @@ Input::Input() {
       markPaintDirty();
     }
   });
-  area->setOnAxis([this](const InputArea::PointerData& data) {
+  area->setOnAxisHandler([this](const InputArea::PointerData& data) {
+    if (data.axis != WL_POINTER_AXIS_VERTICAL_SCROLL || m_inputArea == nullptr || !m_inputArea->focused()) {
+      return false;
+    }
     const float delta = data.scrollDelta(1.0f);
     if (std::abs(delta) < 0.001f) {
-      return;
+      return false;
     }
     // Wheel should move caret through text, not pan viewport directly.
     constexpr int kWheelCaretStep = 1;
@@ -236,6 +239,7 @@ Input::Input() {
     revealCursor();
     markLayoutDirty();
     markPaintDirty();
+    return true;
   });
   area->setOnKeyDown([this](const InputArea::KeyData& k) { handleKey(k.sym, k.utf32, k.modifiers, k.preedit); });
   m_inputArea = static_cast<InputArea*>(addChild(std::move(area)));
@@ -378,6 +382,21 @@ void Input::setOnKeyEvent(std::function<bool(std::uint32_t, std::uint32_t)> call
 }
 
 void Input::setOnFocusLoss(std::function<void()> callback) { m_onFocusLoss = std::move(callback); }
+
+void Input::setEnabled(bool enabled) {
+  if (m_enabled == enabled) {
+    return;
+  }
+  m_enabled = enabled;
+  if (m_inputArea != nullptr) {
+    m_inputArea->setEnabled(enabled);
+  }
+  if (m_clearButtonArea != nullptr) {
+    m_clearButtonArea->setEnabled(enabled);
+  }
+  setOpacity(enabled ? 1.0f : 0.55f);
+  applyVisualState();
+}
 
 void Input::setClipboardService(ClipboardService* clipboard) noexcept { g_clipboard = clipboard; }
 

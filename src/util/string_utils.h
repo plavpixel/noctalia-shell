@@ -41,6 +41,58 @@ namespace StringUtils {
     return lhs.find(rhs) != std::string::npos;
   }
 
+  [[nodiscard]] inline std::string trimLeadingBlankLines(std::string_view text) {
+    if (text.empty()) {
+      return {};
+    }
+
+    std::size_t start = 0;
+    while (start < text.size()) {
+      std::size_t lineEnd = text.find('\n', start);
+      if (lineEnd == std::string_view::npos) {
+        lineEnd = text.size();
+      }
+      const std::string_view line = text.substr(start, lineEnd - start);
+      const bool blankLine =
+          line.empty() || std::all_of(line.begin(), line.end(), [](unsigned char ch) { return std::isspace(ch) != 0; });
+      if (!blankLine) {
+        break;
+      }
+      if (lineEnd >= text.size()) {
+        start = text.size();
+        break;
+      }
+      start = lineEnd + 1;
+    }
+
+    return std::string(text.substr(start));
+  }
+
+  [[nodiscard]] inline std::string truncateByLines(std::string_view text, int maxLines, bool* didTruncate = nullptr) {
+    if (didTruncate != nullptr) {
+      *didTruncate = false;
+    }
+    if (maxLines <= 0 || text.empty()) {
+      return std::string(text);
+    }
+
+    int seenLines = 1;
+    std::size_t index = 0;
+    while (index < text.size()) {
+      if (text[index] == '\n') {
+        ++seenLines;
+        if (seenLines > maxLines) {
+          if (didTruncate != nullptr) {
+            *didTruncate = true;
+          }
+          return std::string(text.substr(0, index));
+        }
+      }
+      ++index;
+    }
+    return std::string(text);
+  }
+
   // Strip HTML/Pango tags and unescape XML entities.
   [[nodiscard]] inline std::string sanitizeMarkup(std::string_view s) {
     std::string out;

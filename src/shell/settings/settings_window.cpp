@@ -11,6 +11,7 @@
 #include "shell/settings/settings_entity_editor.h"
 #include "shell/settings/settings_registry.h"
 #include "shell/settings/settings_sidebar.h"
+#include "system/dependency_service.h"
 #include "theme/community_palettes.h"
 #include "theme/community_templates.h"
 #include "ui/controls/box.h"
@@ -22,6 +23,7 @@
 #include "ui/controls/label.h"
 #include "ui/controls/scroll_view.h"
 #include "ui/controls/select.h"
+#include "ui/controls/separator.h"
 #include "ui/controls/spacer.h"
 #include "ui/controls/toggle.h"
 #include "ui/dialogs/file_dialog.h"
@@ -48,13 +50,18 @@ namespace {
   constexpr std::int32_t kActionSupportReport = 1;
   constexpr std::int32_t kActionFlattenedConfig = 2;
 
+  constexpr float kWindowWidth = 1080.0f;
+  constexpr float kWindowHeight = 600.0f;
+  constexpr float kWindowMinWidth = 800.0f;
+  constexpr float kWindowMinHeight = 500.0f;
+  constexpr float kBodyMaxWidth = 1280.0f;
+
   std::unique_ptr<Label> makeLabel(std::string_view text, float fontSize, const ColorSpec& color, bool bold = false) {
     auto label = std::make_unique<Label>();
     label->setText(text);
     label->setFontSize(fontSize);
     label->setColor(color);
     label->setBold(bold);
-    label->setStableBaseline(true);
     return label;
   }
 
@@ -108,10 +115,12 @@ namespace {
 
 SettingsWindow::~SettingsWindow() = default;
 
-void SettingsWindow::initialize(WaylandConnection& wayland, ConfigService* config, RenderContext* renderContext) {
+void SettingsWindow::initialize(WaylandConnection& wayland, ConfigService* config, RenderContext* renderContext,
+                                DependencyService* dependencies) {
   m_wayland = &wayland;
   m_config = config;
   m_renderContext = renderContext;
+  m_dependencies = dependencies;
   m_showAdvanced = m_config != nullptr ? m_config->config().shell.settingsShowAdvanced : false;
 }
 
@@ -126,6 +135,11 @@ void SettingsWindow::open() {
   if (m_wayland == nullptr || m_renderContext == nullptr || !m_wayland->hasXdgShell()) {
     return;
   }
+
+  if (m_dependencies != nullptr) {
+    m_dependencies->rescan();
+  }
+
   if (isOpen()) {
     m_wayland->activateSurface(m_surface->wlSurface());
     return;
@@ -160,16 +174,16 @@ void SettingsWindow::open() {
   m_surface->setUpdateCallback([]() {});
 
   const float scale = uiScale();
-  const std::uint32_t w = static_cast<std::uint32_t>(std::round(900.0f * scale));
-  const std::uint32_t h = static_cast<std::uint32_t>(std::round(600.0f * scale));
-  const std::uint32_t minW = static_cast<std::uint32_t>(std::round(800.0f * scale));
-  const std::uint32_t minH = static_cast<std::uint32_t>(std::round(500.0f * scale));
+  const std::uint32_t width = static_cast<std::uint32_t>(std::round(kWindowWidth * scale));
+  const std::uint32_t height = static_cast<std::uint32_t>(std::round(kWindowHeight * scale));
+  const std::uint32_t minWidth = static_cast<std::uint32_t>(std::round(kWindowMinWidth * scale));
+  const std::uint32_t minHeight = static_cast<std::uint32_t>(std::round(kWindowMinHeight * scale));
 
   ToplevelSurfaceConfig cfg{
-      .width = std::max<std::uint32_t>(1, w),
-      .height = std::max<std::uint32_t>(1, h),
-      .minWidth = minW,
-      .minHeight = minH,
+      .width = std::max<std::uint32_t>(1, width),
+      .height = std::max<std::uint32_t>(1, height),
+      .minWidth = minWidth,
+      .minHeight = minHeight,
       .title = i18n::tr("settings.window.native-title"),
       .appId = "dev.noctalia.Noctalia.Settings",
   };
@@ -941,6 +955,8 @@ void SettingsWindow::buildScene(std::uint32_t width, std::uint32_t height) {
   }
   settings::RegistryEnvironment env;
   env.niriBackdropSupported = (m_wayland != nullptr && compositors::isNiri());
+  env.ddcutilAvailable = (m_dependencies != nullptr && m_dependencies->hasDdcutil());
+  env.wlsunsetAvailable = (m_dependencies != nullptr && m_dependencies->hasWlsunset());
   for (const auto& paletteInfo : noctalia::theme::availableCommunityPalettes()) {
     env.communityPalettes.push_back(settings::SelectOption{paletteInfo.name, paletteInfo.name});
   }
@@ -998,7 +1014,7 @@ void SettingsWindow::buildScene(std::uint32_t width, std::uint32_t height) {
   if (m_config != nullptr) {
     for (const auto& entry : m_settingsRegistry) {
       if (settingEntryBelongsToPage(entry, m_selectedSection, m_selectedBarName, m_selectedMonitorOverride) &&
-          m_config->hasOverride(entry.path) && !containsPath(resetPagePaths, entry.path)) {
+          m_config->hasEffectiveOverride(entry.path) && !containsPath(resetPagePaths, entry.path)) {
         resetPagePaths.push_back(entry.path);
       }
     }
@@ -1031,10 +1047,9 @@ void SettingsWindow::buildScene(std::uint32_t width, std::uint32_t height) {
   main->setPadding(Style::spaceLg * scale);
   main->setSize(w, h);
 
-  const float bodyMaxWidth = 1024.0f * scale;
   const auto centeredRow = [&](std::unique_ptr<Flex> child) {
     child->setFlexGrow(1.0f);
-    child->setMaxWidth(bodyMaxWidth);
+    child->setMaxWidth(kBodyMaxWidth * scale);
     auto row = std::make_unique<Flex>();
     row->setDirection(FlexDirection::Horizontal);
     row->setAlign(FlexAlign::Stretch);
@@ -1055,7 +1070,6 @@ void SettingsWindow::buildScene(std::uint32_t width, std::uint32_t height) {
   headerTitle->setFontSize(Style::fontSizeTitle * scale);
   headerTitle->setColor(colorSpecFromRole(ColorRole::OnSurface));
   headerTitle->setFlexGrow(1.0f);
-  headerTitle->setStableBaseline(true);
   header->addChild(std::move(headerTitle));
 
   auto actionsMenuBtn = std::make_unique<Button>();
@@ -1256,6 +1270,10 @@ void SettingsWindow::buildScene(std::uint32_t width, std::uint32_t height) {
   });
 
   body->addChild(std::move(sidebar));
+
+  auto separator = std::make_unique<Separator>();
+  separator->setColor(colorSpecFromRole(ColorRole::Outline, 0.35f));
+  body->addChild(std::move(separator));
 
   auto scroll = std::make_unique<ScrollView>();
   scroll->bindState(&m_contentScrollState);

@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 
 class GlSharedContext;
 class RenderTarget;
@@ -13,9 +14,11 @@ class TextureManager;
 struct wl_surface;
 enum class WallpaperSourceKind : std::uint8_t;
 enum class WallpaperTransition : std::uint8_t;
+struct AudioSpectrumStyle;
 struct EffectStyle;
 struct GraphStyle;
 struct RoundedRectStyle;
+struct ScreenCornerStyle;
 struct SpinnerStyle;
 struct TransitionParams;
 
@@ -120,6 +123,11 @@ public:
   virtual void drawGlyph(const RenderGlyphDraw& draw) = 0;
   virtual void drawSpinner(float surfaceWidth, float surfaceHeight, float width, float height,
                            const SpinnerStyle& style, const Mat3& transform) = 0;
+  virtual void drawScreenCorner(float surfaceWidth, float surfaceHeight, float pixelScaleX, float pixelScaleY,
+                                float width, float height, const ScreenCornerStyle& style, const Mat3& transform) = 0;
+  virtual void drawAudioSpectrum(float surfaceWidth, float surfaceHeight, float pixelScaleX, float pixelScaleY,
+                                 float width, float height, const AudioSpectrumStyle& style,
+                                 std::span<const float> values, const Mat3& transform) = 0;
   virtual void drawEffect(float surfaceWidth, float surfaceHeight, float width, float height, const EffectStyle& style,
                           const Mat3& transform) = 0;
   virtual void drawGraph(TextureId dataTexture, int textureWidth, float surfaceWidth, float surfaceHeight, float width,

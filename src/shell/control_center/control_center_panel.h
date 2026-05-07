@@ -23,6 +23,7 @@ class BluetoothService;
 class BrightnessService;
 class Button;
 class ConfigService;
+class DependencyService;
 class Flex;
 class HttpClient;
 class IdleInhibitor;
@@ -56,8 +57,8 @@ public:
                      BluetoothService* bluetooth = nullptr, BluetoothAgent* bluetoothAgent = nullptr,
                      BrightnessService* brightness = nullptr, SystemMonitorService* sysmon = nullptr,
                      NightLightManager* nightLight = nullptr, noctalia::theme::ThemeService* theme = nullptr,
-                     IdleInhibitor* idleInhibitor = nullptr, WaylandConnection* wayland = nullptr,
-                     Wallpaper* wallpaper = nullptr);
+                     IdleInhibitor* idleInhibitor = nullptr, DependencyService* dependencies = nullptr,
+                     WaylandConnection* wayland = nullptr, Wallpaper* wallpaper = nullptr);
 
   void create() override;
   void onFrameTick(float deltaMs) override;
@@ -72,7 +73,7 @@ public:
   [[nodiscard]] float preferredHeight() const override { return scaled(520.0f); }
   [[nodiscard]] bool centeredHorizontally() const override { return true; }
   [[nodiscard]] bool centeredVertically() const override { return true; }
-  [[nodiscard]] bool prefersAttachedToBar() const noexcept override { return true; }
+  [[nodiscard]] bool prefersAttachedToBar() const noexcept override;
 
 private:
   void doLayout(Renderer& renderer, float width, float height) override;
@@ -134,5 +135,8 @@ private:
   std::array<Flex*, kTabCount> m_tabContainers{};
   std::array<Flex*, kTabCount> m_tabHeaderActions{};
   TabId m_activeTab = TabId::Overview;
+  ConfigService* m_config = nullptr;
+  BrightnessService* m_brightness = nullptr;
   NotificationManager* m_notificationManager = nullptr;
+  DependencyService* m_dependencies = nullptr;
 };

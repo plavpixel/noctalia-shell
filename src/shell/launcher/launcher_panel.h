@@ -42,6 +42,7 @@ public:
   [[nodiscard]] LayerShellLayer layer() const override { return LayerShellLayer::Overlay; }
   [[nodiscard]] LayerShellKeyboard keyboardMode() const override { return LayerShellKeyboard::Exclusive; }
   [[nodiscard]] InputArea* initialFocusArea() const override;
+  [[nodiscard]] bool prefersAttachedToBar() const noexcept override;
 
 private:
   void doLayout(Renderer& renderer, float width, float height) override;
@@ -50,7 +51,6 @@ private:
   void activateAt(std::size_t index);
   void activateSelected();
   bool handleKeyEvent(std::uint32_t sym, std::uint32_t modifiers);
-  void scrollToSelected();
   void applyEmptyState();
 
   std::vector<std::unique_ptr<LauncherProvider>> m_providers;
@@ -67,7 +67,6 @@ private:
 
   std::string m_query;
   std::size_t m_selectedIndex = 0;
-  bool m_pendingScrollToSelected = false;
   ConfigService* m_config = nullptr;
   AsyncTextureCache* m_asyncTextures = nullptr;
 };

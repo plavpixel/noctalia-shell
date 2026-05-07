@@ -85,21 +85,32 @@ void PanelManager::initialize(WaylandConnection& wayland, ConfigService* config,
   m_config = config;
   m_renderContext = renderContext;
   m_clickShield.initialize(wayland);
-  m_focusGrab.initialize(wayland);
-  m_focusGrab.setOnCleared([this]() {
-    if (isOpen() && !m_closing) {
-      closePanel();
-    }
-  });
 }
 
 void PanelManager::setOpenSettingsWindowCallback(std::function<void()> callback) {
   m_openSettingsWindow = std::move(callback);
 }
 
+void PanelManager::setToggleSettingsWindowCallback(std::function<void()> callback) {
+  m_toggleSettingsWindow = std::move(callback);
+}
+
 void PanelManager::openSettingsWindow() {
   if (isOpen() && !m_closing) {
     closePanel();
+  }
+  if (m_openSettingsWindow) {
+    m_openSettingsWindow();
+  }
+}
+
+void PanelManager::toggleSettingsWindow() {
+  if (isOpen() && !m_closing) {
+    closePanel();
+  }
+  if (m_toggleSettingsWindow) {
+    m_toggleSettingsWindow();
+    return;
   }
   if (m_openSettingsWindow) {
     m_openSettingsWindow();
@@ -159,7 +170,6 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
   const bool isBottom = barConfig.position == "bottom";
   const bool isLeft = barConfig.position == "left";
   const bool isRight = barConfig.position == "right";
-  const bool isVertical = isLeft || isRight;
   const std::int32_t panelGap = static_cast<std::int32_t>(Style::spaceXs);
   const std::int32_t screenPadding = static_cast<std::int32_t>(Style::spaceSm);
 
@@ -190,14 +200,19 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
                                : isLeft   ? LayerShellAnchor::Left | LayerShellAnchor::Top
                                : isRight  ? LayerShellAnchor::Right | LayerShellAnchor::Top
                                           : LayerShellAnchor::Top | LayerShellAnchor::Left;
-  const std::int32_t barOffset =
-      barConfig.thickness + (isVertical ? std::max(0, barConfig.marginH) : std::max(0, barConfig.marginV)) + panelGap;
+  const std::int32_t barOffset = barConfig.thickness + std::max(0, barConfig.marginEdge) + panelGap;
 
   const auto marginLeft = centeredH ? 0
                                     : clampMargin(request.anchorX - static_cast<float>(panelWidth) * 0.5f,
                                                   static_cast<std::int32_t>(panelWidth), outputWidth, screenPadding);
-  const auto marginTop = clampMargin(request.anchorY - static_cast<float>(panelHeight) * 0.5f,
-                                     static_cast<std::int32_t>(panelHeight), outputHeight, screenPadding);
+  const auto marginTopFromAnchor = clampMargin(request.anchorY - static_cast<float>(panelHeight) * 0.5f,
+                                               static_cast<std::int32_t>(panelHeight), outputHeight, screenPadding);
+  // Detached panels with explicit widget-provided anchors should follow that
+  // anchor; otherwise they pick up fixed bar offsets intended for centered
+  // panels and can appear too far from the trigger.
+  const bool useExplicitAnchorForDetached = request.hasExplicitAnchor;
+  const auto marginBottomFromAnchor =
+      std::max(0, outputHeight - marginTopFromAnchor - static_cast<std::int32_t>(panelHeight));
 
   auto surfaceConfig = LayerSurfaceConfig{
       .nameSpace = "noctalia-panel",
@@ -208,10 +223,11 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
       .exclusiveZone = 0,
       .marginTop = centeredV   ? static_cast<std::int32_t>((outputHeight - static_cast<std::int32_t>(panelHeight)) / 2)
                    : centeredH ? (isBottom ? 0 : barOffset)
-                   : (isLeft || isRight) ? marginTop
-                                         : (isBottom ? 0 : barOffset),
+                   : (isLeft || isRight)
+                       ? marginTopFromAnchor
+                       : (isBottom ? 0 : (useExplicitAnchorForDetached ? marginTopFromAnchor : barOffset)),
       .marginRight = isRight ? barOffset : 0,
-      .marginBottom = isBottom ? barOffset : 0,
+      .marginBottom = isBottom ? (useExplicitAnchorForDetached ? marginBottomFromAnchor : barOffset) : 0,
       .marginLeft = centeredH ? 0 : (isLeft ? barOffset : marginLeft),
       .keyboard = m_activePanel->keyboardMode(),
       .defaultWidth = panelWidth,
@@ -294,27 +310,37 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
     const std::uint32_t surfaceHeight = barIsVertical ? (panelHeight + crossPad) : (panelHeight + mainPad);
 
     // Bar visible rect in screen coords, derived from BarConfig + output dimensions.
-    const std::int32_t marginH = std::max(0, barConfig.marginH);
-    const std::int32_t marginV = std::max(0, barConfig.marginV);
-    const std::int32_t barLeft = barIsRight ? std::max(0, outputWidth - marginH - barConfig.thickness) : marginH;
-    const std::int32_t barTop = barIsBottom ? std::max(0, outputHeight - marginV - barConfig.thickness) : marginV;
+    const std::int32_t mEdge = std::max(0, barConfig.marginEdge);
+    const std::int32_t mEnds = std::max(0, barConfig.marginEnds);
+    const std::int32_t barLeft =
+        barIsRight ? std::max(0, outputWidth - mEdge - barConfig.thickness) : (barIsVertical ? mEdge : mEnds);
+    const std::int32_t barTop =
+        barIsBottom ? std::max(0, outputHeight - mEdge - barConfig.thickness) : (barIsVertical ? mEnds : mEdge);
     const std::int32_t barRight =
-        barIsVertical ? barLeft + barConfig.thickness : std::max(barLeft, outputWidth - marginH);
+        barIsVertical ? barLeft + barConfig.thickness : std::max(barLeft, outputWidth - mEnds);
     const std::int32_t barBottom =
-        barIsVertical ? std::max(barTop, outputHeight - marginV) : barTop + barConfig.thickness;
+        barIsVertical ? std::max(barTop, outputHeight - mEnds) : barTop + barConfig.thickness;
 
-    // Panel body rect in screen coords. Centered on the bar's main axis; 1 px bar overlap
-    // so the concave-corner notches read as merged with the bar edge.
+    // Panel body rect in screen coords. For attached panels, place along the bar
+    // main axis using request anchor when provided, else center fallback.
+    // Keep 1 px bar overlap so concave corners read as merged with the bar edge.
     std::int32_t visualX = 0;
     std::int32_t visualY = 0;
+    const bool useAnchorForAttached = request.hasExplicitAnchor;
     if (barIsVertical) {
       const auto centeredY = barTop + (barBottom - barTop - static_cast<std::int32_t>(panelHeight)) / 2;
-      visualY = centeredY;
+      const auto desiredY =
+          static_cast<std::int32_t>(std::lround(request.anchorY - static_cast<float>(panelHeight) * 0.5f));
+      const auto maxY = std::max(barTop, barBottom - static_cast<std::int32_t>(panelHeight));
+      visualY = useAnchorForAttached ? std::clamp(desiredY, barTop, maxY) : centeredY;
       visualX = barIsLeft ? barRight - kAttachedPanelBarOverlap
                           : barLeft - static_cast<std::int32_t>(panelWidth) + kAttachedPanelBarOverlap;
     } else {
       const auto centeredX = barLeft + (barRight - barLeft - static_cast<std::int32_t>(panelWidth)) / 2;
-      visualX = centeredX;
+      const auto desiredX =
+          static_cast<std::int32_t>(std::lround(request.anchorX - static_cast<float>(panelWidth) * 0.5f));
+      const auto maxX = std::max(barLeft, barRight - static_cast<std::int32_t>(panelWidth));
+      visualX = useAnchorForAttached ? std::clamp(desiredX, barLeft, maxX) : centeredX;
       visualY = barIsBottom ? barTop - static_cast<std::int32_t>(panelHeight) + kAttachedPanelBarOverlap
                             : barBottom - kAttachedPanelBarOverlap;
     }
@@ -351,14 +377,14 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
     std::int32_t barSurfaceLocalVisualX = visualX;
     std::int32_t barSurfaceLocalVisualY = visualY;
     if (barIsVertical) {
-      barSurfaceLocalVisualY = visualY - (barTop - std::min(marginV, barShadowBleed.up));
+      barSurfaceLocalVisualY = visualY - (barTop - std::min(mEnds, barShadowBleed.up));
       const std::int32_t barSurfaceOriginX =
-          barIsLeft ? std::max(0, marginH - barShadowBleed.left) : barLeft - barShadowBleed.left;
+          barIsLeft ? std::max(0, mEdge - barShadowBleed.left) : barLeft - barShadowBleed.left;
       barSurfaceLocalVisualX = visualX - barSurfaceOriginX;
     } else {
-      barSurfaceLocalVisualX = visualX - (barLeft - std::min(marginH, barShadowBleed.left));
+      barSurfaceLocalVisualX = visualX - (barLeft - std::min(mEnds, barShadowBleed.left));
       const std::int32_t barSurfaceOriginY =
-          barIsBottom ? barTop - barShadowBleed.up : std::max(0, marginV - barShadowBleed.up);
+          barIsBottom ? barTop - barShadowBleed.up : std::max(0, mEdge - barShadowBleed.up);
       barSurfaceLocalVisualY = visualY - barSurfaceOriginY;
     }
 
@@ -401,7 +427,10 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
         // surface also grabs the pointer (any click anywhere reports on this surface), which
         // breaks outside-click dismissal. When the focus_grab protocol is available we drop to
         // OnDemand and let the grab grant keyboard focus to the panel per the spec.
-        .keyboard = m_focusGrab.available() ? LayerShellKeyboard::OnDemand : LayerShellKeyboard::Exclusive,
+        .keyboard = (m_wayland != nullptr && m_wayland->focusGrabService() != nullptr &&
+                     m_wayland->focusGrabService()->available())
+                        ? LayerShellKeyboard::OnDemand
+                        : LayerShellKeyboard::Exclusive,
         .defaultWidth = surfaceWidth,
         .defaultHeight = surfaceHeight,
     };
@@ -503,7 +532,8 @@ void PanelManager::activateClickShield() {
   // exclude bar surfaces there (input region exclusion isn't honored when
   // keyboard_interactivity is Exclusive, which is what unlocks pointer
   // delivery). Skip the shield and let activateFocusGrab() handle it later.
-  if (m_focusGrab.available()) {
+  auto* grabService = m_wayland->focusGrabService();
+  if (grabService != nullptr && grabService->available()) {
     return;
   }
   std::vector<wl_output*> outputs;
@@ -517,7 +547,11 @@ void PanelManager::activateClickShield() {
 }
 
 void PanelManager::activateFocusGrab() {
-  if (!m_focusGrab.available() || m_wlSurface == nullptr) {
+  if (m_wayland == nullptr || m_wlSurface == nullptr) {
+    return;
+  }
+  auto* grabService = m_wayland->focusGrabService();
+  if (grabService == nullptr || !grabService->available()) {
     return;
   }
   // Whitelist the panel + every bar surface. Clicks on whitelisted surfaces
@@ -526,18 +560,34 @@ void PanelManager::activateFocusGrab() {
   // event handler. The panel uses OnDemand keyboard mode on Hyprland (the
   // focus_grab grants keyboard focus to the panel on its own) so the panel
   // surface no longer grabs the pointer the way Exclusive does.
-  std::vector<wl_surface*> whitelist;
-  whitelist.push_back(m_wlSurface);
+  m_focusGrab = grabService->createGrab();
+  if (m_focusGrab == nullptr) {
+    return;
+  }
+  m_focusGrab->setOnCleared([this]() {
+    if (isOpen() && !m_closing) {
+      closePanel();
+    }
+  });
+  grabService->setPopupGrabHost(this);
+  m_focusGrab->addSurface(m_wlSurface);
   if (m_focusGrabBarSurfacesProvider) {
     auto bars = m_focusGrabBarSurfacesProvider();
-    whitelist.insert(whitelist.end(), bars.begin(), bars.end());
+    for (auto* surface : bars) {
+      m_focusGrab->addSurface(surface);
+    }
   }
-  m_focusGrab.activate(whitelist);
+  m_focusGrab->commit();
 }
 
 void PanelManager::deactivateOutsideClickHandlers() {
   m_clickShield.deactivate();
-  m_focusGrab.deactivate();
+  if (m_wayland != nullptr) {
+    if (auto* svc = m_wayland->focusGrabService(); svc != nullptr && svc->popupGrabHost() == this) {
+      svc->setPopupGrabHost(nullptr);
+    }
+  }
+  m_focusGrab.reset();
 }
 
 void PanelManager::closePanel() {
@@ -763,6 +813,10 @@ bool PanelManager::onPointerEvent(const PointerEvent& event) {
 
 bool PanelManager::isOpen() const noexcept { return m_surface != nullptr && m_activePanel != nullptr; }
 
+bool PanelManager::isOpenPanel(std::string_view panelId) const noexcept {
+  return isOpen() && m_activePanelId == panelId;
+}
+
 bool PanelManager::isAttachedOpen() const noexcept { return isOpen() && m_attachedToBar; }
 
 const std::string& PanelManager::activePanelId() const noexcept { return m_activePanelId; }
@@ -815,11 +869,34 @@ void PanelManager::requestRedraw() {
   m_surface->requestRedraw();
 }
 
+void PanelManager::requestFrameTick() {
+  if (!isOpen() || m_surface == nullptr) {
+    return;
+  }
+  m_surface->requestFrameTick();
+}
+
 void PanelManager::close() { closePanel(); }
 
 void PanelManager::setActivePopup(ContextMenuPopup* popup) { m_activePopup = popup; }
 
 void PanelManager::clearActivePopup() { m_activePopup = nullptr; }
+
+void PanelManager::registerPopupSurface(wl_surface* surface) {
+  if (m_focusGrab == nullptr || surface == nullptr) {
+    return;
+  }
+  m_focusGrab->addSurface(surface);
+  m_focusGrab->commit();
+}
+
+void PanelManager::unregisterPopupSurface(wl_surface* surface) {
+  if (m_focusGrab == nullptr || surface == nullptr) {
+    return;
+  }
+  m_focusGrab->removeSurface(surface);
+  m_focusGrab->commit();
+}
 
 void PanelManager::beginAttachedPopup(wl_surface* surface) {
   if (surface == nullptr || surface != m_wlSurface) {
@@ -1485,7 +1562,7 @@ void PanelManager::registerIpc(IpcService& ipc) {
   ipc.registerHandler(
       "settings-toggle",
       [this](const std::string&) -> std::string {
-        openSettingsWindow();
+        toggleSettingsWindow();
         return "ok\n";
       },
       "settings-toggle", "Toggle the settings window");

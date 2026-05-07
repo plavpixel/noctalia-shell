@@ -113,11 +113,11 @@ void Label::setTextAlign(TextAlign align) {
   m_measureCached = false;
 }
 
-void Label::setStableBaseline(bool stable) {
-  if (m_stableBaseline == stable) {
+void Label::setBaselineMode(LabelBaselineMode mode) {
+  if (m_baselineMode == mode) {
     return;
   }
-  m_stableBaseline = stable;
+  m_baselineMode = mode;
   m_measureCached = false;
 }
 
@@ -385,49 +385,52 @@ LayoutSize Label::measureWithConstraints(Renderer& renderer, const LayoutConstra
       m_autoScroll || (effectiveMaxLines == 1) ||
       (effectiveMaxLines == 0 && configuredMaxWidth <= 0.0f && m_plainText.find('\n') == std::string::npos);
   const TextAlign align = m_textNode->textAlign();
+  const float renderScale = renderer.renderScale();
+  const std::uint64_t textMetricsGeneration = renderer.textMetricsGeneration();
   if (m_measureCached && m_cachedText == m_plainText && m_cachedFontSize == m_textNode->fontSize() &&
       m_cachedBold == m_textNode->bold() && m_cachedMaxWidth == m_userMaxWidth && m_cachedMaxLines == m_userMaxLines &&
       m_cachedMinWidth == m_minWidth && m_cachedConstraintMinWidth == constraints.minWidth &&
       m_cachedConstraintMaxWidth == constraints.maxWidth && m_cachedHasConstraintMaxWidth == constraints.hasMaxWidth &&
-      m_cachedTextAlign == align && m_cachedStableBaseline == m_stableBaseline && m_cachedAutoScroll == m_autoScroll) {
+      m_cachedRenderScale == renderScale && m_cachedTextMetricsGeneration == textMetricsGeneration &&
+      m_cachedTextAlign == align && m_cachedBaselineMode == m_baselineMode && m_cachedAutoScroll == m_autoScroll) {
     return LayoutSize{.width = width(), .height = height()};
   }
 
-  syncTextNodeConstraints();
-  // Override the default with the constraint-aware wrap budget so paint uses the same
-  // wrap width that was used to measure metrics. Without this, a Label inside a Flex
-  // with stretch-derived width would measure correctly but paint unwrapped.
-  // Skipped on the arrange path: arrange's exact width is the label's own already-measured
-  // width fed back to itself, not a parent wrap-intent. Feeding it to Pango as maxWidth
-  // can spuriously ellipsize when the rounded box width sits a fraction below natural.
-  if (!m_autoScroll && !fromArrange) {
-    m_textNode->setMaxWidth(measureMaxWidth);
-    m_textNode->setMaxLines(effectiveMaxLines);
+  // On the arrange path the text node already holds the constraint-aware wrap budget
+  // from the preceding measure pass. Resetting it here (via syncTextNodeConstraints)
+  // would clobber the correct ellipsis width with m_userMaxWidth, which can be wider
+  // than the flex-assigned cell (e.g. leftColumnWidth vs. the actual value-cell share).
+  // Only update text node constraints on the measure path.
+  if (!fromArrange) {
+    syncTextNodeConstraints();
+    // Override with constraint-aware wrap budget so paint uses the same wrap width
+    // that was used to measure metrics. Without this, a Label inside a Flex with
+    // stretch-derived width would measure correctly but paint unwrapped.
+    // Skipped for auto-scroll: marquee needs the unconstrained text width.
+    if (!m_autoScroll) {
+      m_textNode->setMaxWidth(measureMaxWidth);
+      m_textNode->setMaxLines(effectiveMaxLines);
+    }
   }
 
   auto metrics = renderer.measureText(m_plainText, m_textNode->fontSize(), m_textNode->bold(), measureMaxWidth,
                                       effectiveMaxLines, align);
-  auto refMetrics = renderer.measureText("A", m_textNode->fontSize(), m_textNode->bold());
   const float measuredWidth = measureMaxWidth > 0.0f ? std::min(metrics.width, measureMaxWidth) : metrics.width;
   m_fullTextWidth = m_autoScroll ? measuredWidth : 0.0f;
   const bool hasAssignedWidth = constraints.hasExactWidth();
   const float assignedWidth = constraints.maxWidth;
 
-  const float refHeight = refMetrics.bottom - refMetrics.top;
   const float actualHeight = metrics.bottom - metrics.top;
   const float inkHeight = std::max(0.0f, metrics.inkBottom - metrics.inkTop);
   if (singleLine && inkHeight > 0.0f) {
-    float inkTopForCentering = metrics.inkTop;
-    float inkHeightForCentering = inkHeight;
-    if (m_stableBaseline) {
-      const float capInkHeight = std::max(0.0f, refMetrics.inkBottom - refMetrics.inkTop);
-      if (capInkHeight > 0.0f) {
-        inkTopForCentering = refMetrics.inkTop;
-        inkHeightForCentering = capInkHeight;
-      }
+    float height = 0.0f;
+    if (m_baselineMode == LabelBaselineMode::Stable) {
+      height = std::round(actualHeight);
+      m_baselineOffset = -metrics.top + (height - actualHeight) * 0.5f;
+    } else {
+      height = std::round(std::max(actualHeight, inkHeight));
+      m_baselineOffset = -metrics.inkTop + (height - inkHeight) * 0.5f;
     }
-    const float height = std::round(std::max(refHeight, inkHeight));
-    m_baselineOffset = -inkTopForCentering + (height - inkHeightForCentering) * 0.5f;
     float finalWidth = 0.0f;
     if (m_autoScroll) {
       float boxW = m_fullTextWidth;
@@ -447,9 +450,8 @@ LayoutSize Label::measureWithConstraints(Renderer& renderer, const LayoutConstra
     }
     setSize(std::round(finalWidth), height);
   } else {
-    m_baselineOffset = -std::min(refMetrics.top, metrics.top);
-    const float inkBottom = m_baselineOffset + metrics.bottom;
-    const float height = std::max({refHeight, actualHeight, inkBottom});
+    m_baselineOffset = -metrics.top;
+    const float height = actualHeight;
     float finalWidth = 0.0f;
     if (m_autoScroll) {
       float boxW = m_fullTextWidth;
@@ -507,9 +509,11 @@ LayoutSize Label::measureWithConstraints(Renderer& renderer, const LayoutConstra
   m_cachedMinWidth = m_minWidth;
   m_cachedConstraintMinWidth = constraints.minWidth;
   m_cachedConstraintMaxWidth = constraints.maxWidth;
+  m_cachedRenderScale = renderScale;
+  m_cachedTextMetricsGeneration = textMetricsGeneration;
   m_cachedHasConstraintMaxWidth = constraints.hasMaxWidth;
   m_cachedTextAlign = align;
-  m_cachedStableBaseline = m_stableBaseline;
+  m_cachedBaselineMode = m_baselineMode;
   m_cachedAutoScroll = m_autoScroll;
   m_measureCached = true;
 

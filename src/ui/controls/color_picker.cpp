@@ -108,7 +108,6 @@ ColorPicker::ColorPicker() {
     lab->setText(title);
     lab->setFontSize(Style::fontSizeCaption);
     lab->setColor(colorSpecFromRole(ColorRole::OnSurfaceVariant));
-    lab->setStableBaseline(true);
     col->addChild(std::move(lab));
     auto in = std::make_unique<Input>();
     in->setControlHeight(Style::controlHeightSm);
@@ -247,6 +246,25 @@ void ColorPicker::setColor(const Color& rgba) {
 
 void ColorPicker::setOnColorChanged(std::function<void(const Color&)> callback) {
   m_onColorChanged = std::move(callback);
+}
+
+void ColorPicker::setEnabled(bool enabled) {
+  if (m_enabled == enabled) {
+    return;
+  }
+  m_enabled = enabled;
+  if (m_svInput != nullptr) {
+    m_svInput->setEnabled(enabled);
+  }
+  if (m_hueInput != nullptr) {
+    m_hueInput->setEnabled(enabled);
+  }
+  for (Input* field : {m_hexInput, m_rInput, m_gInput, m_bInput}) {
+    if (field != nullptr) {
+      field->setEnabled(enabled);
+    }
+  }
+  setOpacity(enabled ? 1.0f : 0.55f);
 }
 
 void ColorPicker::rebuildSvTexture(Renderer& renderer) {
@@ -441,7 +459,6 @@ ColorPickerSheet::ColorPickerSheet(float chromeScale) : m_chromeScale(std::max(0
   title->setBold(true);
   title->setFontSize(Style::fontSizeTitle * m_chromeScale);
   title->setColor(colorSpecFromRole(ColorRole::Primary));
-  title->setStableBaseline(true);
   m_title = static_cast<Label*>(header->addChild(std::move(title)));
 
   header->addChild(std::make_unique<Spacer>());

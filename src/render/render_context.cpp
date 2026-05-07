@@ -8,12 +8,14 @@
 #include "render/core/texture_manager.h"
 #include "render/gl_shared_context.h"
 #include "render/render_target.h"
+#include "render/scene/audio_spectrum_node.h"
 #include "render/scene/effect_node.h"
 #include "render/scene/glyph_node.h"
 #include "render/scene/graph_node.h"
 #include "render/scene/image_node.h"
 #include "render/scene/node.h"
 #include "render/scene/rect_node.h"
+#include "render/scene/screen_corner_node.h"
 #include "render/scene/spinner_node.h"
 #include "render/scene/text_node.h"
 #include "render/scene/wallpaper_node.h"
@@ -55,12 +57,24 @@ namespace {
                                float bottom) {
     const float scaleX = sw > 0.0f ? bw / sw : 1.0f;
     const float scaleY = sh > 0.0f ? bh / sh : 1.0f;
+    const auto clampX = [bw](std::int32_t value) {
+      return std::clamp(value, std::int32_t{0}, static_cast<std::int32_t>(std::ceil(bw)));
+    };
+    const auto clampY = [bh](std::int32_t value) {
+      return std::clamp(value, std::int32_t{0}, static_cast<std::int32_t>(std::ceil(bh)));
+    };
 
+    // Round clip edges independently in buffer space. Rounding the size after
+    // flooring the origin can drop the final column/row for fractional origins.
+    const std::int32_t x0 = clampX(static_cast<std::int32_t>(std::floor(left * scaleX)));
+    const std::int32_t x1 = clampX(static_cast<std::int32_t>(std::ceil(right * scaleX)));
+    const std::int32_t y0 = clampY(static_cast<std::int32_t>(std::floor((sh - bottom) * scaleY)));
+    const std::int32_t y1 = clampY(static_cast<std::int32_t>(std::ceil((sh - top) * scaleY)));
     return RenderScissor{
-        .x = static_cast<std::int32_t>(std::floor(left * scaleX)),
-        .y = static_cast<std::int32_t>(std::floor((sh - bottom) * scaleY)),
-        .width = static_cast<std::int32_t>(std::ceil(std::max(0.0f, right - left) * scaleX)),
-        .height = static_cast<std::int32_t>(std::ceil(std::max(0.0f, bottom - top) * scaleY)),
+        .x = x0,
+        .y = y0,
+        .width = std::max(std::int32_t{0}, x1 - x0),
+        .height = std::max(std::int32_t{0}, y1 - y0),
     };
   }
 
@@ -87,6 +101,8 @@ void RenderContext::initialize(GlSharedContext& shared) {
   m_textRenderer.initialize(m_backend.get(), &m_backend->textureManager());
   m_glyphRenderer.initialize(paths::assetPath("fonts/tabler.ttf").string(), m_backend.get(),
                              &m_backend->textureManager());
+  m_textFontFamily = "sans-serif";
+  ++m_textMetricsGeneration;
 }
 
 void RenderContext::makeCurrentNoSurface() {
@@ -119,8 +135,16 @@ void RenderContext::syncContentScale(RenderTarget& target) {
 }
 
 void RenderContext::setTextFontFamily(std::string family) {
+  if (family.empty()) {
+    family = "sans-serif";
+  }
+  if (m_textFontFamily == family) {
+    return;
+  }
   makeCurrentNoSurface();
-  m_textRenderer.setFontFamily(std::move(family));
+  m_textFontFamily = std::move(family);
+  m_textRenderer.setFontFamily(m_textFontFamily);
+  ++m_textMetricsGeneration;
 }
 
 void RenderContext::renderScene(RenderTarget& target, Node* sceneRoot) {
@@ -152,6 +176,19 @@ void RenderContext::renderScene(RenderTarget& target, Node* sceneRoot) {
 TextMetrics RenderContext::measureText(std::string_view text, float fontSize, bool bold, float maxWidth, int maxLines,
                                        TextAlign align) {
   auto m = m_textRenderer.measure(text, fontSize, bold, maxWidth, maxLines, align);
+  return TextMetrics{.width = m.width,
+                     .left = m.left,
+                     .right = m.right,
+                     .top = m.top,
+                     .bottom = m.bottom,
+                     .inkTop = m.inkTop,
+                     .inkBottom = m.inkBottom,
+                     .inkLeft = m.inkLeft,
+                     .inkRight = m.inkRight};
+}
+
+TextMetrics RenderContext::measureFont(float fontSize, bool bold) {
+  auto m = m_textRenderer.measureFont(fontSize, bold);
   return TextMetrics{.width = m.width,
                      .left = m.left,
                      .right = m.right,
@@ -282,6 +319,26 @@ void RenderContext::renderNode(const Node* node, const Mat3& parentTransform, fl
     auto style = spinner->style();
     style.color.a *= effectiveOpacity;
     m_backend->drawSpinner(sw, sh, node->width(), node->height(), style, worldTransform);
+    break;
+  }
+  case NodeType::ScreenCorner: {
+    const auto* corner = static_cast<const ScreenCornerNode*>(node);
+    auto style = corner->style();
+    style.color.a *= effectiveOpacity;
+    const float pixelScaleX = sw > 0.0f ? bw / sw : 1.0f;
+    const float pixelScaleY = sh > 0.0f ? bh / sh : 1.0f;
+    m_backend->drawScreenCorner(sw, sh, pixelScaleX, pixelScaleY, node->width(), node->height(), style, worldTransform);
+    break;
+  }
+  case NodeType::AudioSpectrum: {
+    const auto* spectrum = static_cast<const AudioSpectrumNode*>(node);
+    auto style = spectrum->style();
+    style.lowColor.a *= effectiveOpacity;
+    style.highColor.a *= effectiveOpacity;
+    const float pixelScaleX = sw > 0.0f ? bw / sw : 1.0f;
+    const float pixelScaleY = sh > 0.0f ? bh / sh : 1.0f;
+    m_backend->drawAudioSpectrum(sw, sh, pixelScaleX, pixelScaleY, node->width(), node->height(), style,
+                                 spectrum->values(), worldTransform);
     break;
   }
   case NodeType::Effect: {

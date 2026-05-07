@@ -7,9 +7,12 @@
 #include "ui/controls/box.h"
 #include "ui/controls/button.h"
 #include "ui/controls/flex.h"
+#include "ui/controls/glyph.h"
 #include "ui/controls/input.h"
 #include "ui/controls/label.h"
 #include "ui/controls/search_picker.h"
+#include "ui/controls/separator.h"
+#include "ui/dialogs/file_dialog.h"
 #include "ui/dialogs/glyph_picker_dialog.h"
 #include "ui/palette.h"
 #include "ui/style.h"
@@ -19,11 +22,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <format>
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_set>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -59,8 +63,27 @@ namespace settings {
       label->setFontSize(fontSize);
       label->setColor(color);
       label->setBold(bold);
-      label->setStableBaseline(true);
       return label;
+    }
+
+    std::unique_ptr<Glyph> makeGlyph(std::string_view name, float glyphSize, const ColorSpec& color) {
+      auto glyph = std::make_unique<Glyph>();
+      glyph->setGlyph(name);
+      glyph->setGlyphSize(glyphSize);
+      glyph->setColor(color);
+      return glyph;
+    }
+
+    std::unique_ptr<Node> makeMiniSectionHeader(std::string_view title, float scale) {
+      auto wrap = std::make_unique<Flex>();
+      wrap->setDirection(FlexDirection::Vertical);
+      wrap->setAlign(FlexAlign::Stretch);
+      wrap->setGap(Style::spaceXs * scale);
+      wrap->setPadding(Style::spaceSm * scale, 0.0f, 0.0f, 0.0f);
+      wrap->addChild(std::make_unique<Separator>());
+      wrap->addChild(
+          makeLabel(title, Style::fontSizeCaption * scale, colorSpecFromRole(ColorRole::OnSurfaceVariant), true));
+      return wrap;
     }
 
     void closeInspector(std::string& openWidgetPickerPath, std::string& editingWidgetName,
@@ -416,6 +439,33 @@ namespace settings {
       return isValidWidgetInstanceId(name) && !widgetReferenceNameExists(cfg, name);
     }
 
+    std::string trimmedText(std::string_view text) {
+      std::size_t start = 0;
+      while (start < text.size() && std::isspace(static_cast<unsigned char>(text[start]))) {
+        ++start;
+      }
+
+      std::size_t end = text.size();
+      while (end > start && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+        --end;
+      }
+
+      return std::string(text.substr(start, end - start));
+    }
+
+    std::string widgetCapsuleGroupName(const Config& cfg, std::string_view widgetName) {
+      const auto it = cfg.widgets.find(std::string(widgetName));
+      if (it == cfg.widgets.end()) {
+        return {};
+      }
+
+      if (!it->second.hasSetting("capsule_group")) {
+        return {};
+      }
+
+      return trimmedText(it->second.getString("capsule_group", ""));
+    }
+
     std::size_t insertionIndexForSceneY(float sceneY, const std::vector<Flex*>& itemNodes) {
       for (std::size_t i = 0; i < itemNodes.size(); ++i) {
         const auto* item = itemNodes[i];
@@ -588,6 +638,36 @@ namespace settings {
           value);
     }
 
+    std::vector<SelectOption> managedCapsuleGroupOptions(const Config& cfg, const std::vector<std::string>& lanePath) {
+      std::vector<SelectOption> options;
+      if (lanePath.size() < 2 || lanePath[0] != "bar") {
+        return options;
+      }
+
+      const auto* bar = findBar(cfg, lanePath[1]);
+      if (bar == nullptr) {
+        return options;
+      }
+
+      const std::vector<std::string>* groups = &bar->widgetCapsuleGroups;
+      if (lanePath.size() >= 4 && lanePath[2] == "monitor") {
+        if (const auto* ovr = findMonitorOverride(*bar, lanePath[3]); ovr != nullptr && ovr->widgetCapsuleGroups) {
+          groups = &*ovr->widgetCapsuleGroups;
+        }
+      }
+
+      options.reserve(groups->size() + 1);
+      options.push_back(SelectOption{.value = "", .label = i18n::tr("settings.widgets.options.none")});
+      for (const auto& group : *groups) {
+        if (group.empty()) {
+          continue;
+        }
+        options.push_back(SelectOption{.value = group, .label = group});
+      }
+
+      return options;
+    }
+
     void addRawWidgetSettings(Flex& panel, std::string_view widgetName, const std::vector<WidgetSettingSpec>& specs,
                               std::size_t& visibleSpecs, const BarWidgetEditorContext& ctx) {
       if (!ctx.showAdvanced) {
@@ -611,7 +691,7 @@ namespace settings {
           continue;
         }
         const auto path = widgetSettingPath(std::string(widgetName), key);
-        const bool overridden = ctx.configService != nullptr && ctx.configService->hasOverride(path);
+        const bool overridden = ctx.configService != nullptr && ctx.configService->hasEffectiveOverride(path);
         if (ctx.showOverriddenOnly && !overridden) {
           continue;
         }
@@ -642,7 +722,7 @@ namespace settings {
         }
         const auto path = widgetSettingPath(std::string(widgetName), key);
         const std::string deleteKey = pathKey(path);
-        const bool overridden = ctx.configService != nullptr && ctx.configService->hasOverride(path);
+        const bool overridden = ctx.configService != nullptr && ctx.configService->hasEffectiveOverride(path);
         const bool pendingDelete = ctx.pendingDeleteWidgetSettingPath == deleteKey;
 
         auto row = std::make_unique<Flex>();
@@ -701,7 +781,7 @@ namespace settings {
       }
 
       auto path = widgetSettingPath(std::string(widgetName), "type");
-      const bool overridden = ctx.configService != nullptr && ctx.configService->hasOverride(path);
+      const bool overridden = ctx.configService != nullptr && ctx.configService->hasEffectiveOverride(path);
       if (ctx.showOverriddenOnly && !overridden) {
         return;
       }
@@ -724,7 +804,6 @@ namespace settings {
       auto detail =
           makeLabel(i18n::tr("settings.widgets.settings.type.description"), Style::fontSizeCaption * ctx.scale,
                     colorSpecFromRole(ColorRole::OnSurfaceVariant), false);
-      detail->setMaxWidth(360.0f * ctx.scale);
       copy->addChild(std::move(detail));
       row->addChild(std::move(copy));
 
@@ -733,7 +812,9 @@ namespace settings {
       ++visibleSpecs;
     }
 
-    void addWidgetSettingsPanel(Flex& item, std::string widgetName, const BarWidgetEditorContext& ctx) {
+    void addWidgetSettingsPanel(Flex& item, std::string widgetName,
+                                const std::vector<SelectOption>& managedCapsuleGroups,
+                                const BarWidgetEditorContext& ctx) {
       const auto widgetType = widgetTypeForReference(ctx.config, widgetName);
       if (widgetType.empty()) {
         return;
@@ -766,14 +847,23 @@ namespace settings {
 
       std::size_t visibleSpecs = 0;
       addWidgetTypeSettingRow(*panel, widgetName, widgetType, visibleSpecs, ctx);
+      bool groupingHeaderAdded = false;
       for (const auto& spec : specs) {
+        if (spec.key == "capsule_group" && managedCapsuleGroups.empty()) {
+          continue;
+        }
         if (spec.advanced && !ctx.showAdvanced) {
           continue;
         }
         const auto path = widgetSettingPath(widgetName, spec.key);
-        const bool overridden = ctx.configService != nullptr && ctx.configService->hasOverride(path);
+        const bool overridden = ctx.configService != nullptr && ctx.configService->hasEffectiveOverride(path);
         if (ctx.showOverriddenOnly && !overridden) {
           continue;
+        }
+
+        if (spec.key == "capsule_group" && !groupingHeaderAdded) {
+          panel->addChild(makeMiniSectionHeader(i18n::tr("settings.navigation.groups.grouping"), ctx.scale));
+          groupingHeaderAdded = true;
         }
 
         const auto value = widgetSettingValue(ctx.config, widgetName, spec);
@@ -845,6 +935,53 @@ namespace settings {
             wrap->addChild(std::move(pickerButton));
 
             ctx.makeRow(*panel, entry, std::move(wrap));
+          } else if (spec.key == "capsule_group" && !managedCapsuleGroups.empty()) {
+            SelectSetting selectSetting{
+                .options = managedCapsuleGroups, .selectedValue = settingValueAsString(value), .clearOnEmpty = true};
+            ctx.makeRow(*panel, entry, ctx.makeSelect(selectSetting, path));
+          } else if (spec.key == "custom_image") {
+            auto wrap = std::make_unique<Flex>();
+            wrap->setDirection(FlexDirection::Horizontal);
+            wrap->setAlign(FlexAlign::Center);
+            wrap->setGap(Style::spaceSm * ctx.scale);
+            wrap->addChild(std::move(textNode));
+
+            auto pickerButton = std::make_unique<Button>();
+            pickerButton->setVariant(ButtonVariant::Secondary);
+            pickerButton->setGlyph("photo");
+            pickerButton->setGlyphSize(Style::fontSizeBody * ctx.scale);
+            pickerButton->setMinHeight(Style::controlHeight * ctx.scale);
+            pickerButton->setMinWidth(Style::controlHeight * ctx.scale);
+            pickerButton->setPadding(Style::spaceXs * ctx.scale, Style::spaceSm * ctx.scale);
+            pickerButton->setRadius(Style::radiusMd * ctx.scale);
+            pickerButton->setOnClick([setOverride = ctx.setOverride, requestRebuild = ctx.requestRebuild, path,
+                                      currentValue = settingValueAsString(value)]() {
+              FileDialogOptions options;
+              options.mode = FileDialogMode::Open;
+              options.defaultViewMode = FileDialogViewMode::Grid;
+              options.title = i18n::tr("settings.widgets.settings.custom_image.dialog-title");
+              options.extensions = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".bmp", ".gif"};
+              if (!currentValue.empty()) {
+                std::filesystem::path current(currentValue);
+                std::error_code ec;
+                if (current.has_parent_path() && std::filesystem::exists(current.parent_path(), ec)) {
+                  options.startDirectory = current.parent_path();
+                }
+              }
+              (void)FileDialog::open(std::move(options),
+                                     [setOverride, requestRebuild, path](std::optional<std::filesystem::path> picked) {
+                                       if (!picked.has_value()) {
+                                         return;
+                                       }
+                                       setOverride(path, picked->string());
+                                       if (requestRebuild) {
+                                         requestRebuild();
+                                       }
+                                     });
+            });
+            wrap->addChild(std::move(pickerButton));
+
+            ctx.makeRow(*panel, entry, std::move(wrap));
           } else {
             ctx.makeRow(*panel, entry, std::move(textNode));
           }
@@ -868,8 +1005,16 @@ namespace settings {
           ColorRolePickerSetting pickerSetting;
           pickerSetting.selectedValue = settingValueAsString(value);
           pickerSetting.allowNone = spec.advanced;
-          for (const auto& token : kColorRoleTokens) {
-            pickerSetting.roles.push_back(token.role);
+          if (!spec.options.empty()) {
+            for (const auto& option : spec.options) {
+              if (const auto role = colorRoleFromToken(option.value); role.has_value()) {
+                pickerSetting.roles.push_back(*role);
+              }
+            }
+          } else {
+            for (const auto& token : kColorRoleTokens) {
+              pickerSetting.roles.push_back(token.role);
+            }
           }
           ctx.makeRow(*panel, entry, ctx.makeColorRolePicker(std::move(pickerSetting), path));
           break;
@@ -906,6 +1051,7 @@ namespace settings {
       if (hasEdit) {
         const std::string widgetName = ctx.editingWidgetName;
         const auto info = widgetReferenceInfo(ctx.config, widgetName);
+        const std::string capsuleGroup = widgetCapsuleGroupName(ctx.config, widgetName);
         const bool guiManaged = isGuiManagedNamedWidgetInstance(ctx, widgetName);
 
         std::string currentLaneKey;
@@ -919,8 +1065,14 @@ namespace settings {
             currentLaneKey = std::string(laneKey);
             currentLanePath = std::move(p);
             currentLaneItems = std::move(items);
-            currentLaneInherited = isMonitorWidgetListPath(currentLanePath) &&
-                                   !monitorWidgetListHasExplicitValue(ctx.config, currentLanePath);
+            const bool currentLaneOverridden =
+                ctx.configService != nullptr && ctx.configService->hasEffectiveOverride(currentLanePath);
+            const bool currentLaneRedundantGuiOverride = ctx.configService != nullptr &&
+                                                         ctx.configService->hasOverride(currentLanePath) &&
+                                                         !currentLaneOverridden;
+            currentLaneInherited =
+                isMonitorWidgetListPath(currentLanePath) &&
+                (!monitorWidgetListHasExplicitValue(ctx.config, currentLanePath) || currentLaneRedundantGuiOverride);
             break;
           }
         }
@@ -932,12 +1084,17 @@ namespace settings {
         headerRow->addChild(makeLabel(i18n::tr("settings.entities.widget.inspector.edit-title"),
                                       Style::fontSizeCaption * ctx.scale,
                                       colorSpecFromRole(ColorRole::OnSurfaceVariant), true));
-        headerRow->addChild(
-            makeLabel(info.title, Style::fontSizeBody * ctx.scale, colorSpecFromRole(ColorRole::OnSurface), true));
+        {
+          auto titleLabel =
+              makeLabel(info.title, Style::fontSizeBody * ctx.scale, colorSpecFromRole(ColorRole::OnSurface), true);
+          titleLabel->setMaxLines(1);
+          titleLabel->setFlexGrow(1.0f);
+          headerRow->addChild(std::move(titleLabel));
+        }
 
         auto kindBadge = std::make_unique<Flex>();
         kindBadge->setAlign(FlexAlign::Center);
-        kindBadge->setPadding(1.0f * ctx.scale, Style::spaceXs * ctx.scale);
+        kindBadge->setPadding(0, Style::spaceXs * ctx.scale);
         kindBadge->setRadius(Style::radiusSm * ctx.scale);
         kindBadge->setFill(widgetBadgeColor(info.kind));
         kindBadge->addChild(
@@ -966,6 +1123,18 @@ namespace settings {
         });
         headerRow->addChild(std::move(closeBtn));
         inspector->addChild(std::move(headerRow));
+
+        if (!capsuleGroup.empty()) {
+          auto groupRow = std::make_unique<Flex>();
+          groupRow->setDirection(FlexDirection::Horizontal);
+          groupRow->setAlign(FlexAlign::Center);
+          groupRow->setGap(Style::spaceXs * ctx.scale);
+          groupRow->addChild(makeGlyph("stack-back", Style::fontSizeCaption * ctx.scale,
+                                       colorSpecFromRole(ColorRole::OnSurfaceVariant)));
+          groupRow->addChild(makeLabel(capsuleGroup, Style::fontSizeCaption * ctx.scale,
+                                       colorSpecFromRole(ColorRole::OnSurfaceVariant), false));
+          inspector->addChild(std::move(groupRow));
+        }
 
         if (!currentLaneInherited && !currentLaneKey.empty()) {
           auto moveRow = std::make_unique<Flex>();
@@ -1009,7 +1178,7 @@ namespace settings {
           inspector->addChild(std::move(moveRow));
         }
 
-        addWidgetSettingsPanel(*inspector, widgetName, ctx);
+        addWidgetSettingsPanel(*inspector, widgetName, managedCapsuleGroupOptions(ctx.config, currentLanePath), ctx);
 
         const bool pendingDelete = guiManaged && ctx.pendingDeleteWidgetName == widgetName;
         const bool renaming = guiManaged && ctx.renamingWidgetName == widgetName;
@@ -1417,9 +1586,11 @@ namespace settings {
     for (const auto laneKey : kLaneKeys) {
       auto lanePath = pathWithLastSegment(entry.path, std::string(laneKey));
       const auto laneItems = barWidgetItemsForPath(ctx.config, lanePath);
-      const bool overridden = ctx.configService != nullptr && ctx.configService->hasOverride(lanePath);
-      const bool inherited =
-          isMonitorWidgetListPath(lanePath) && !monitorWidgetListHasExplicitValue(ctx.config, lanePath);
+      const bool overridden = ctx.configService != nullptr && ctx.configService->hasEffectiveOverride(lanePath);
+      const bool redundantGuiOverride =
+          ctx.configService != nullptr && ctx.configService->hasOverride(lanePath) && !overridden;
+      const bool inherited = isMonitorWidgetListPath(lanePath) &&
+                             (!monitorWidgetListHasExplicitValue(ctx.config, lanePath) || redundantGuiOverride);
 
       auto lane = std::make_unique<Flex>();
       lane->setDirection(FlexDirection::Vertical);
@@ -1460,7 +1631,7 @@ namespace settings {
       if (overridden) {
         auto badge = std::make_unique<Flex>();
         badge->setAlign(FlexAlign::Center);
-        badge->setPadding(1.0f * ctx.scale, Style::spaceXs * ctx.scale);
+        badge->setPadding(0, Style::spaceXs * ctx.scale);
         badge->setRadius(Style::radiusSm * ctx.scale);
         badge->setFill(colorSpecFromRole(ColorRole::Primary, 0.15f));
         badge->addChild(makeLabel(i18n::tr("settings.badges.override"), Style::fontSizeCaption * ctx.scale,
@@ -1470,7 +1641,7 @@ namespace settings {
       if (inherited) {
         auto badge = std::make_unique<Flex>();
         badge->setAlign(FlexAlign::Center);
-        badge->setPadding(1.0f * ctx.scale, Style::spaceXs * ctx.scale);
+        badge->setPadding(0, Style::spaceXs * ctx.scale);
         badge->setRadius(Style::radiusSm * ctx.scale);
         badge->setFill(colorSpecFromRole(ColorRole::OnSurfaceVariant, 0.14f));
         badge->addChild(makeLabel(i18n::tr("settings.badges.inherited"), Style::fontSizeCaption * ctx.scale,
@@ -1500,6 +1671,7 @@ namespace settings {
 
       for (std::size_t i = 0; i < laneItems.size(); ++i) {
         const auto info = widgetReferenceInfo(ctx.config, laneItems[i]);
+        const std::string capsuleGroup = widgetCapsuleGroupName(ctx.config, laneItems[i]);
         auto item = std::make_unique<Flex>();
         item->setDirection(FlexDirection::Vertical);
         item->setAlign(FlexAlign::Stretch);
@@ -1515,23 +1687,40 @@ namespace settings {
         itemTop->setDirection(FlexDirection::Horizontal);
         itemTop->setAlign(FlexAlign::Center);
         itemTop->setGap(Style::spaceXs * ctx.scale);
-        itemTop->addChild(
-            makeLabel(info.title, Style::fontSizeCaption * ctx.scale, colorSpecFromRole(ColorRole::OnSurface), true));
-        auto itemSpacer = std::make_unique<Flex>();
-        itemSpacer->setFlexGrow(1.0f);
-        itemTop->addChild(std::move(itemSpacer));
+        {
+          auto titleLabel =
+              makeLabel(info.title, Style::fontSizeCaption * ctx.scale, colorSpecFromRole(ColorRole::OnSurface), true);
+          titleLabel->setMaxLines(1);
+          titleLabel->setFlexGrow(1.0f);
+          itemTop->addChild(std::move(titleLabel));
+        }
         auto kindBadge = std::make_unique<Flex>();
         kindBadge->setAlign(FlexAlign::Center);
-        kindBadge->setPadding(1.0f * ctx.scale, Style::spaceXs * ctx.scale);
+        kindBadge->setPadding(0, Style::spaceXs * ctx.scale);
         kindBadge->setRadius(Style::radiusSm * ctx.scale);
         kindBadge->setFill(widgetBadgeColor(info.kind));
         kindBadge->addChild(
             makeLabel(info.badge, Style::fontSizeCaption * ctx.scale, colorSpecFromRole(ColorRole::OnSurface), true));
         itemTop->addChild(std::move(kindBadge));
+        if (!capsuleGroup.empty()) {
+          itemTop->addChild(makeGlyph("stack-back", Style::fontSizeCaption * ctx.scale,
+                                      colorSpecFromRole(ColorRole::OnSurfaceVariant)));
+        }
         item->addChild(std::move(itemTop));
 
         item->addChild(makeLabel(info.detail, Style::fontSizeCaption * ctx.scale,
                                  colorSpecFromRole(ColorRole::OnSurfaceVariant), false));
+        if (!capsuleGroup.empty()) {
+          auto groupRow = std::make_unique<Flex>();
+          groupRow->setDirection(FlexDirection::Horizontal);
+          groupRow->setAlign(FlexAlign::Center);
+          groupRow->setGap(Style::spaceXs * ctx.scale);
+          groupRow->addChild(makeGlyph("stack-back", Style::fontSizeCaption * ctx.scale,
+                                       colorSpecFromRole(ColorRole::OnSurfaceVariant)));
+          groupRow->addChild(makeLabel(capsuleGroup, Style::fontSizeCaption * ctx.scale,
+                                       colorSpecFromRole(ColorRole::OnSurfaceVariant), false));
+          item->addChild(std::move(groupRow));
+        }
 
         auto actions = std::make_unique<Flex>();
         actions->setDirection(FlexDirection::Horizontal);

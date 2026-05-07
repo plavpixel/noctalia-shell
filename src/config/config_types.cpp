@@ -32,6 +32,12 @@ namespace {
 
 } // namespace
 
+std::vector<ShortcutConfig> defaultControlCenterShortcuts() {
+  return {
+      {"wifi"}, {"bluetooth"}, {"caffeine"}, {"nightlight"}, {"notification"}, {"power_profile"},
+  };
+}
+
 std::string WidgetConfig::getString(const std::string& key, const std::string& fallback) const {
   auto it = settings.find(key);
   if (it == settings.end()) {
@@ -110,6 +116,10 @@ WidgetBarCapsuleSpec resolveWidgetBarCapsuleSpec(const BarConfig& bar, const Wid
   }
   if (!spec.enabled) {
     return spec;
+  }
+
+  if (widget != nullptr && widget->hasSetting("capsule_group")) {
+    spec.group = StringUtils::trim(widget->getString("capsule_group", ""));
   }
 
   if (widgetHasFillKey) {

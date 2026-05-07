@@ -5,6 +5,7 @@
 #include "core/deferred_call.h"
 #include "core/log.h"
 #include "core/ui_phase.h"
+#include "cursor-shape-v1-client-protocol.h"
 #include "i18n/i18n.h"
 #include "net/http_client.h"
 #include "net/uri.h"
@@ -20,6 +21,7 @@
 #include "ui/controls/progress_bar.h"
 #include "ui/palette.h"
 #include "ui/style.h"
+#include "util/string_utils.h"
 #include "wayland/surface.h"
 #include "wayland/wayland_connection.h"
 #include "wayland/wayland_seat.h"
@@ -162,6 +164,13 @@ namespace {
 
   float notificationTextMaxWidth() { return std::max(0.0f, kCardWidth - notificationTextStartX() - kCardInnerPad); }
 
+  bool isCloseButtonHit(float localX, float localY) {
+    const float closeLeft = static_cast<float>(kCardWidth) - kCardInnerPad - kCloseButtonSize;
+    const float closeTop = kCardInnerPad;
+    return localX >= closeLeft && localX < closeLeft + kCloseButtonSize && localY >= closeTop &&
+           localY < closeTop + kCloseButtonSize;
+  }
+
   bool isBlankText(std::string_view text) {
     return text.empty() ||
            std::all_of(text.begin(), text.end(), [](unsigned char ch) { return std::isspace(ch) != 0; });
@@ -219,6 +228,8 @@ namespace {
 
   ToastGeometry planToastLayout(RenderContext& rc, std::string_view summary, std::string_view body,
                                 const std::vector<std::string>& actions, float floorCardHeight) {
+    const std::string displaySummary = StringUtils::trimLeadingBlankLines(summary);
+    const std::string displayBody = StringUtils::trimLeadingBlankLines(body);
     const float textMaxWidth = notificationTextMaxWidth();
     const float actionsReserved = measureActionsFromPairs(rc, actions);
     const float maxCard = static_cast<float>(kMaxToastCardHeight);
@@ -226,12 +237,12 @@ namespace {
 
     ToastGeometry out;
 
-    if (isBlankText(body)) {
+    if (isBlankText(displayBody)) {
       Label summaryProbe;
       summaryProbe.setFontSize(kSummaryFontSize);
       summaryProbe.setBold(true);
       summaryProbe.setMaxWidth(textMaxWidth);
-      summaryProbe.setText(summary);
+      summaryProbe.setText(displaySummary);
       summaryProbe.setMaxLines(kMaxSummaryLines);
       summaryProbe.measure(rc);
       const float sumH = summaryProbe.height();
@@ -257,7 +268,7 @@ namespace {
       summaryProbe.setFontSize(kSummaryFontSize);
       summaryProbe.setBold(true);
       summaryProbe.setMaxWidth(textMaxWidth);
-      summaryProbe.setText(summary);
+      summaryProbe.setText(displaySummary);
       summaryProbe.setMaxLines(sl);
       summaryProbe.measure(rc);
       const float sumH = summaryProbe.height();
@@ -265,7 +276,7 @@ namespace {
       Label bodyProbe;
       bodyProbe.setFontSize(kBodyFontSize);
       bodyProbe.setMaxWidth(textMaxWidth);
-      bodyProbe.setText(body);
+      bodyProbe.setText(displayBody);
       bodyProbe.setMaxLines(bl);
       bodyProbe.measure(rc);
       const float bodyH = bodyProbe.height();
@@ -285,14 +296,14 @@ namespace {
     summaryProbe.setFontSize(kSummaryFontSize);
     summaryProbe.setBold(true);
     summaryProbe.setMaxWidth(textMaxWidth);
-    summaryProbe.setText(summary);
+    summaryProbe.setText(displaySummary);
     summaryProbe.setMaxLines(1);
     summaryProbe.measure(rc);
 
     Label bodyProbe;
     bodyProbe.setFontSize(kBodyFontSize);
     bodyProbe.setMaxWidth(textMaxWidth);
-    bodyProbe.setText(body);
+    bodyProbe.setText(displayBody);
     bodyProbe.setMaxLines(1);
     bodyProbe.measure(rc);
 
@@ -468,16 +479,18 @@ void NotificationToast::onNotificationEvent(const Notification& n, NotificationE
             cs.appNameLabel->setText(n.appName);
             const float actionsReservedHeight = measureActionsFromPairs(*m_renderContext, m_entries[i].actions);
             PopupEntry& e = m_entries[i];
-            cs.summaryLabel->setText(e.summary);
+            const std::string displaySummary = StringUtils::trimLeadingBlankLines(e.summary);
+            const std::string displayBody = StringUtils::trimLeadingBlankLines(e.body);
+            cs.summaryLabel->setText(displaySummary);
             cs.summaryLabel->setMaxLines(std::max(1, e.toastSummaryLines));
             cs.summaryLabel->measure(*m_renderContext);
             const float summaryH = cs.summaryLabel->height();
             const float bodyHeight = availableBodyHeight(summaryH, actionsReservedHeight, cs.cardNode->height());
             const int bodyLines = e.toastBodyLines;
             cs.bodyLabel->setMaxLines(std::max(1, bodyLines));
-            cs.bodyLabel->setText(bodyLines > 0 ? e.body : "");
+            cs.bodyLabel->setText(bodyLines > 0 ? displayBody : "");
             cs.bodyLabel->measure(*m_renderContext);
-            cs.bodyLabel->setVisible(bodyLines > 0 && !e.body.empty());
+            cs.bodyLabel->setVisible(bodyLines > 0 && !isBlankText(displayBody));
             cs.bodyLabel->setPosition(notificationTextStartX(), bodyTopForSummary(summaryH));
             clampBodyLabelHeight(*cs.bodyLabel, bodyHeight);
           }
@@ -724,25 +737,37 @@ void NotificationToast::addCardToInstance(Instance& inst, std::size_t entryIndex
   const uint32_t notificationId = entry.notificationId;
   Glyph* closeGlyphPtr = cs.closeGlyph;
   ProgressBar* progressBarPtr = cs.progressBar;
+  InputArea* cardInput = card;
 
-  card->setOnEnter(
-      [this, closeGlyphPtr, closeColorHover, notificationId, progressBarPtr](const InputArea::PointerData&) {
-        closeGlyphPtr->setColor(closeColorHover);
-        if (auto* popup = findEntry(notificationId); popup != nullptr) {
-          popup->hovered = true;
-          popup->remainingProgress = std::clamp(progressBarPtr->progress(), 0.0f, 1.0f);
-        }
-        pauseCountdowns(notificationId);
-        // Pause the server-side expiry — otherwise NotificationManager's own timer
-        // would fire Closed behind our back, which is what "the progress bar stops
-        // but the timer keeps running" was.
-        if (m_notifications != nullptr) {
-          m_notifications->pauseExpiry(notificationId);
-        }
-      });
+  card->setOnEnter([this, closeGlyphPtr, closeColorNormal, closeColorHover, notificationId, progressBarPtr,
+                    cardInput](const InputArea::PointerData& data) {
+    const bool closeHovered = isCloseButtonHit(data.localX, data.localY);
+    closeGlyphPtr->setColor(closeHovered ? closeColorHover : closeColorNormal);
+    cardInput->setCursorShape(closeHovered ? WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER
+                                           : WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
+    if (auto* popup = findEntry(notificationId); popup != nullptr) {
+      popup->hovered = true;
+      popup->remainingProgress = std::clamp(progressBarPtr->progress(), 0.0f, 1.0f);
+    }
+    pauseCountdowns(notificationId);
+    // Pause the server-side expiry — otherwise NotificationManager's own timer
+    // would fire Closed behind our back, which is what "the progress bar stops
+    // but the timer keeps running" was.
+    if (m_notifications != nullptr) {
+      m_notifications->pauseExpiry(notificationId);
+    }
+  });
 
-  card->setOnLeave([this, notificationId, totalDuration, closeGlyphPtr, closeColorNormal, progressBarPtr]() {
+  card->setOnMotion([closeGlyphPtr, closeColorNormal, closeColorHover, cardInput](const InputArea::PointerData& data) {
+    const bool closeHovered = isCloseButtonHit(data.localX, data.localY);
+    closeGlyphPtr->setColor(closeHovered ? closeColorHover : closeColorNormal);
+    cardInput->setCursorShape(closeHovered ? WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER
+                                           : WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
+  });
+
+  card->setOnLeave([this, notificationId, totalDuration, closeGlyphPtr, closeColorNormal, progressBarPtr, cardInput]() {
     closeGlyphPtr->setColor(closeColorNormal);
+    cardInput->setCursorShape(WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
     if (auto* popup = findEntry(notificationId); popup != nullptr) {
       popup->hovered = false;
       popup->remainingProgress = std::clamp(progressBarPtr->progress(), 0.0f, 1.0f);
@@ -1459,14 +1484,15 @@ InputArea* NotificationToast::buildCard(const PopupEntry& entry, Node** outCardC
   auto viewport = std::make_unique<InputArea>();
   viewport->setSize(kCardWidth, cardHeight);
   viewport->setClipChildren(true);
-  // Unified close mechanism: clicking anywhere on the card dismisses it. The (X) glyph
-  // is purely visual — it brightens while the card is hovered via the card's own
-  // onEnter/onLeave handlers installed in addCardToInstance().
+  viewport->setAcceptedButtons(BTN_LEFT | BTN_RIGHT);
+  // Right-clicking anywhere dismisses the card, while the visual (X) keeps its
+  // familiar left-click close affordance without adding a nested hover target.
   viewport->setOnClick([this, id = entry.notificationId](const InputArea::PointerData& data) {
-    if (data.button == BTN_LEFT) {
+    if (data.button == BTN_RIGHT || (data.button == BTN_LEFT && isCloseButtonHit(data.localX, data.localY))) {
       removePopup(id);
     }
   });
+  viewport->setCursorShape(WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
 
   auto cardRoot = std::make_unique<Node>();
   cardRoot->setSize(kCardWidth, cardHeight);
@@ -1591,7 +1617,9 @@ InputArea* NotificationToast::buildCard(const PopupEntry& entry, Node** outCardC
 
   // Summary (bold title) — Pango handles wrap + ellipsize.
   auto summary = std::make_unique<Label>();
-  summary->setText(entry.summary);
+  const std::string displaySummary = StringUtils::trimLeadingBlankLines(entry.summary);
+  const std::string displayBody = StringUtils::trimLeadingBlankLines(entry.body);
+  summary->setText(displaySummary);
   summary->setFontSize(kSummaryFontSize);
   summary->setColor(colorSpecFromRole(ColorRole::OnSurface));
   summary->setBold(true);
@@ -1621,6 +1649,7 @@ InputArea* NotificationToast::buildCard(const PopupEntry& entry, Node** outCardC
       actionButton->setVariant(ButtonVariant::Outline);
       actionButton->setFontSize(Style::fontSizeCaption);
       actionButton->setText(actionLabel);
+      actionButton->setCursorShape(WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER);
       actionButton->setOnEnter([this, notificationId]() {
         pauseCountdowns(notificationId);
         if (m_notifications != nullptr) {
@@ -1678,7 +1707,7 @@ InputArea* NotificationToast::buildCard(const PopupEntry& entry, Node** outCardC
   foreground->addChild(std::move(summary));
 
   auto body = std::make_unique<Label>();
-  body->setText(entry.body);
+  body->setText(displayBody);
   body->setFontSize(kBodyFontSize);
   body->setColor(colorSpecFromRole(ColorRole::OnSurfaceVariant));
   body->setMaxWidth(textMaxWidth);

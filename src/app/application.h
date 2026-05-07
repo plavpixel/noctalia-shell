@@ -50,6 +50,7 @@
 #include "shell/notification/notification_toast.h"
 #include "shell/osd/audio_osd.h"
 #include "shell/osd/brightness_osd.h"
+#include "shell/osd/lock_keys_osd.h"
 #include "shell/osd/osd_overlay.h"
 #include "shell/panel/panel_manager.h"
 #include "shell/polkit/polkit_panel.h"
@@ -60,8 +61,11 @@
 #include "shell/wallpaper/wallpaper.h"
 #include "system/brightness_poll_source.h"
 #include "system/brightness_service.h"
+#include "system/dependency_service.h"
 #include "system/desktop_entry_poll_source.h"
 #include "system/icon_theme_poll_source.h"
+#include "system/lock_keys_poll_source.h"
+#include "system/lock_keys_service.h"
 #include "system/night_light_manager.h"
 #include "system/system_monitor_service.h"
 #include "system/telemetry_service.h"
@@ -105,7 +109,6 @@ private:
   void startTrayService();
   void syncNotificationDaemon();
   void syncPolkitAgent();
-  [[nodiscard]] bool backdropShouldBeActive() const;
   bool runUserCommand(const std::string& command);
   bool runIdleCommand(const std::string& command);
   void onIconThemeChanged();
@@ -125,6 +128,7 @@ private:
   noctalia::theme::ThemeService m_themeService{m_configService, m_httpClient};
   noctalia::theme::TemplateApplyService m_templateApplyService{m_configService};
   TimeService m_timeService;
+  LockKeysService m_lockKeysService;
   NotificationManager m_notificationManager;
   std::unique_ptr<SessionBus> m_bus;
   std::unique_ptr<SystemBus> m_systemBus;
@@ -133,6 +137,7 @@ private:
   IdleInhibitor m_idleInhibitor;
   IdleManager m_idleManager;
   HookManager m_hookManager;
+  DependencyService m_dependencyService;
   NightLightManager m_nightLightManager;
   std::unique_ptr<MprisService> m_mprisService;
   std::unique_ptr<PowerProfilesService> m_powerProfilesService;
@@ -159,6 +164,7 @@ private:
   GlSharedContext m_glShared;
   SharedTextureCache m_sharedTextureCache;
   RenderContext m_renderContext;
+  ThumbnailService m_thumbnailService;
   Bar m_bar;
   Dock m_dock;
   DesktopWidgetsController m_desktopWidgetsController;
@@ -167,6 +173,7 @@ private:
   NotificationToast m_notificationToast;
   AudioOsd m_audioOsd;
   BrightnessOsd m_brightnessOsd;
+  LockKeysOsd m_lockKeysOsd;
   OsdOverlay m_osdOverlay;
   ScreenCorners m_screenCorners;
   TrayMenu m_trayMenu;
@@ -177,7 +184,6 @@ private:
   ColorPickerDialogPopup m_colorPickerDialogPopup;
   GlyphPickerDialogPopup m_glyphPickerDialogPopup;
   FileDialogPopup m_fileDialogPopup;
-  ThumbnailService m_thumbnailService;
   AsyncTextureCache m_asyncTextureCache;
 
   // Poll sources (must outlive MainLoop)
@@ -193,6 +199,7 @@ private:
   TimerPollSource m_timerPollSource;
   KeyRepeatPollSource m_keyRepeatPollSource{m_wayland};
   WorkspacePollSource m_workspacePollSource{m_wayland};
+  LockKeysPollSource m_lockKeysPollSource{m_lockKeysService};
   std::unique_ptr<BrightnessPollSource> m_brightnessPollSource;
   std::unique_ptr<PipeWirePollSource> m_pipewirePollSource;
   std::unique_ptr<PipeWireSpectrumPollSource> m_pipewireSpectrumPollSource;
@@ -204,6 +211,7 @@ private:
   FileWatchPollSource m_fileWatchPollSource{m_fileWatcher};
   WeatherPollSource m_weatherPollSource{m_weatherService};
   Timer m_trayInitTimer;
+  Timer m_polkitInitTimer;
   Timer m_clipboardAutoPasteTimer;
 
   std::unique_ptr<MainLoop> m_mainLoop;

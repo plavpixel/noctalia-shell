@@ -40,6 +40,7 @@ struct hyprland_focus_grab_manager_v1;
 struct wp_fractional_scale_manager_v1;
 struct wp_viewporter;
 class ClipboardService;
+class FocusGrabService;
 class NiriOutputBackend;
 class NiriWorkspaceBackend;
 struct DataControlOps;
@@ -120,6 +121,7 @@ public:
   [[nodiscard]] ext_background_effect_manager_v1* backgroundEffectManager() const noexcept;
   [[nodiscard]] wp_fractional_scale_manager_v1* fractionalScaleManager() const noexcept;
   [[nodiscard]] hyprland_focus_grab_manager_v1* hyprlandFocusGrabManager() const noexcept;
+  [[nodiscard]] FocusGrabService* focusGrabService() const noexcept;
   [[nodiscard]] wp_viewporter* viewporter() const noexcept;
   [[nodiscard]] wl_display* display() const noexcept;
   [[nodiscard]] wl_compositor* compositor() const noexcept;
@@ -149,6 +151,10 @@ public:
   [[nodiscard]] std::vector<std::string> workspaceDisplayKeys(wl_output* outputFilter = nullptr) const;
   [[nodiscard]] std::vector<WorkspaceWindowAssignment>
   workspaceWindowAssignments(wl_output* outputFilter = nullptr) const;
+  [[nodiscard]] TaskbarAssignmentMode taskbarAssignmentMode() const noexcept;
+  [[nodiscard]] std::unordered_map<std::uintptr_t, WorkspaceWindow>
+  assignTaskbarWindows(const std::vector<TaskbarWindowCandidate>& windows, wl_output* outputFilter = nullptr) const;
+  [[nodiscard]] const char* workspaceBackendName() const noexcept;
   [[nodiscard]] std::vector<ToplevelInfo> windowsForApp(const std::string& idLower, const std::string& wmClassLower,
                                                         wl_output* outputFilter = nullptr) const;
   void activateToplevel(zwlr_foreign_toplevel_handle_v1* handle);
@@ -185,11 +191,20 @@ public:
   void onBackgroundEffectCapabilities(std::uint32_t capabilities) noexcept;
 
 private:
+  struct WorkspaceModelSnapshot {
+    std::uint32_t outputName = 0;
+    std::vector<Workspace> workspaces;
+    std::vector<WorkspaceWindowAssignment> assignments;
+  };
+
   void bindGlobal(wl_registry* registry, std::uint32_t name, const char* interface, std::uint32_t version);
   void bindClipboardService();
   void bindVirtualKeyboardService();
   void cleanup();
   void logStartupSummary() const;
+  [[nodiscard]] std::vector<WorkspaceModelSnapshot> workspaceModelSnapshot() const;
+  [[nodiscard]] static bool sameWorkspaceModelSnapshot(const std::vector<WorkspaceModelSnapshot>& lhs,
+                                                       const std::vector<WorkspaceModelSnapshot>& rhs);
 
   wl_display* m_display = nullptr;
   wl_registry* m_registry = nullptr;
@@ -208,6 +223,7 @@ private:
   ext_background_effect_manager_v1* m_backgroundEffectManager = nullptr;
   wp_fractional_scale_manager_v1* m_fractionalScaleManager = nullptr;
   hyprland_focus_grab_manager_v1* m_hyprlandFocusGrabManager = nullptr;
+  std::unique_ptr<FocusGrabService> m_focusGrabService;
   wp_viewporter* m_viewporter = nullptr;
   bool m_backgroundEffectBlurSupported = false;
   void* m_dataControlManager = nullptr;
@@ -222,6 +238,7 @@ private:
   std::vector<WaylandOutput> m_outputs;
   ChangeCallback m_outputChangeCallback;
   ChangeCallback m_workspaceChangeCallback;
+  std::vector<WorkspaceModelSnapshot> m_lastWorkspaceModelSnapshot;
   std::unordered_map<wl_surface*, wl_output*> m_surfaceOutputMap;
   std::unordered_map<wl_surface*, zwlr_layer_surface_v1*> m_layerSurfaceMap;
   wl_output* m_lastPointerOutput = nullptr;

@@ -6,8 +6,9 @@
 #include "shell/panel/attached_panel_context.h"
 #include "shell/panel/panel.h"
 #include "shell/panel/panel_click_shield.h"
-#include "shell/panel/panel_focus_grab.h"
 #include "ui/dialogs/layer_popup_host.h"
+#include "wayland/hyprland/focus_grab_service.h"
+#include "wayland/hyprland/popup_grab_host.h"
 #include "wayland/layer_surface.h"
 #include "wayland/surface.h"
 #include "wayland/wayland_seat.h"
@@ -35,11 +36,12 @@ struct PanelOpenRequest {
   wl_output* output = nullptr;
   float anchorX = 0.0f;
   float anchorY = 0.0f;
+  bool hasExplicitAnchor = false;
   std::string_view context = {};
   std::string_view sourceBarName = {};
 };
 
-class PanelManager {
+class PanelManager : public PopupGrabHost {
 public:
   PanelManager();
   ~PanelManager();
@@ -53,7 +55,9 @@ public:
 
   // Optional: invoked from shell UI (e.g. control center) to spawn the standalone settings toplevel.
   void setOpenSettingsWindowCallback(std::function<void()> callback);
+  void setToggleSettingsWindowCallback(std::function<void()> callback);
   void openSettingsWindow();
+  void toggleSettingsWindow();
   void setAttachedPanelGeometryCallback(std::function<void(wl_output*, std::optional<AttachedPanelGeometry>)> callback);
   // Callback to query the bar surface rects on a given output, in output-local
   // coordinates. The click shield's input region excludes these rects so
@@ -75,6 +79,7 @@ public:
   void onKeyboardEvent(const KeyboardEvent& event);
 
   [[nodiscard]] bool isOpen() const noexcept;
+  [[nodiscard]] bool isOpenPanel(std::string_view panelId) const noexcept;
   [[nodiscard]] bool isAttachedOpen() const noexcept;
   [[nodiscard]] const std::string& activePanelId() const noexcept;
   // True when a panel is open and it reports the given context as active (e.g. control-center tab).
@@ -100,9 +105,16 @@ public:
   // Requests a redraw on the active panel surface without re-running panel
   // update/layout. Used for reactive palette restyling.
   void requestRedraw();
+  void requestFrameTick();
   void close();
   void beginAttachedPopup(wl_surface* surface);
   void endAttachedPopup(wl_surface* surface);
+
+  // PopupGrabHost. PopupSurface enrolls itself with us while our focus_grab
+  // is active so the compositor doesn't fire `cleared` when the user
+  // interacts with a popup opened from inside the panel.
+  void registerPopupSurface(wl_surface* surface) override;
+  void unregisterPopupSurface(wl_surface* surface) override;
 
   void registerIpc(IpcService& ipc);
 
@@ -135,11 +147,12 @@ private:
   ConfigService* m_config = nullptr;
   RenderContext* m_renderContext = nullptr;
   std::function<void()> m_openSettingsWindow;
+  std::function<void()> m_toggleSettingsWindow;
   std::function<void(wl_output*, std::optional<AttachedPanelGeometry>)> m_attachedPanelGeometryCallback;
   std::function<std::vector<InputRect>(wl_output*)> m_clickShieldExcludeRectsProvider;
   std::function<std::vector<wl_surface*>()> m_focusGrabBarSurfacesProvider;
   PanelClickShield m_clickShield;
-  PanelFocusGrab m_focusGrab;
+  std::unique_ptr<FocusGrab> m_focusGrab;
 
   std::unique_ptr<Surface> m_surface;
   LayerSurface* m_layerSurface = nullptr;

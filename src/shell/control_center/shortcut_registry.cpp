@@ -13,17 +13,38 @@
 #include "shell/bar/widgets/keyboard_layout_widget.h"
 #include "shell/control_center/shortcut_services.h"
 #include "shell/panel/panel_manager.h"
+#include "system/dependency_service.h"
 #include "system/night_light_manager.h"
 #include "system/weather_service.h"
 #include "theme/theme_service.h"
 #include "wayland/wayland_connection.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <format>
 #include <vector>
 
 namespace {
+
+  constexpr std::array<ShortcutRegistry::CatalogEntry, 16> kShortcutCatalog{{
+      {"wifi", "control-center.shortcuts.wifi"},
+      {"bluetooth", "control-center.shortcuts.bluetooth"},
+      {"nightlight", "control-center.shortcuts.nightlight"},
+      {"notification", "control-center.shortcuts.notification"},
+      {"dark_mode", "control-center.shortcuts.dark-mode.dark"},
+      {"caffeine", "control-center.shortcuts.caffeine"},
+      {"audio", "control-center.shortcuts.audio"},
+      {"mic_mute", "control-center.shortcuts.mic-mute"},
+      {"power_profile", "control-center.shortcuts.power-profile"},
+      {"media", "control-center.shortcuts.media"},
+      {"weather", "control-center.shortcuts.weather"},
+      {"sysmon", "control-center.shortcuts.sysmon"},
+      {"keyboard_layout", "control-center.shortcuts.keyboard-layout"},
+      {"wallpaper", "control-center.shortcuts.wallpaper"},
+      {"session", "control-center.shortcuts.session"},
+      {"clipboard", "control-center.shortcuts.clipboard"},
+  }};
 
   void openTab(std::string_view tab) {
     PanelManager::instance().togglePanel("control-center", PanelOpenRequest{.context = tab});
@@ -88,9 +109,28 @@ namespace {
 
   class NightlightShortcut final : public Shortcut {
   public:
-    explicit NightlightShortcut(NightLightManager* svc) : m_svc(svc) {}
+    NightlightShortcut(NightLightManager* svc, DependencyService* deps) : m_svc(svc), m_deps(deps) {}
     std::string_view id() const override { return "nightlight"; }
     std::string defaultLabel() const override { return i18n::tr("control-center.shortcuts.nightlight"); }
+    bool enabled() const override { return m_deps != nullptr && m_deps->hasWlsunset(); }
+    std::string displayLabel() const override {
+      if (m_svc == nullptr) {
+        return defaultLabel();
+      }
+      if (m_svc->forceEnabled()) {
+        return i18n::tr("control-center.shortcuts.nightlight-states.forced");
+      }
+      if (!m_svc->enabled()) {
+        return i18n::tr("control-center.shortcuts.nightlight-states.off");
+      }
+      // Scheduled and currently warming the screen.
+      if (m_svc->active()) {
+        return i18n::tr("control-center.shortcuts.nightlight-states.scheduled-night");
+      }
+      // Scheduled but in the day phase: surface that the click "took" even
+      // though wlsunset is intentionally not running yet.
+      return i18n::tr("control-center.shortcuts.nightlight-states.scheduled-day");
+    }
     std::string_view iconOn() const override {
       return m_svc != nullptr && m_svc->forceEnabled() ? "nightlight-forced" : "nightlight-on";
     }
@@ -98,18 +138,28 @@ namespace {
     bool isToggle() const override { return true; }
     bool active() const override { return m_svc != nullptr && (m_svc->forceEnabled() || m_svc->active()); }
     void onClick() override {
-      if (m_svc != nullptr) {
-        if (m_svc->forceEnabled()) {
-          m_svc->setEnabled(false);
-          m_svc->setForceEnabled(false);
-        } else {
-          m_svc->toggleEnabled();
-        }
+      if (!enabled() || m_svc == nullptr) {
+        return;
+      }
+      // Mirror the bar widget: primary toggles on/off; if currently forced,
+      // drop force and land on scheduled-on so force is reversible without
+      // also losing the master enable.
+      if (m_svc->forceEnabled()) {
+        m_svc->clearForceOverride();
+        m_svc->setEnabled(true);
+      } else {
+        m_svc->toggleEnabled();
+      }
+    }
+    void onRightClick() override {
+      if (enabled() && m_svc != nullptr) {
+        m_svc->toggleForceEnabled();
       }
     }
 
   private:
     NightLightManager* m_svc;
+    DependencyService* m_deps;
   };
 
   class NotificationShortcut final : public Shortcut {
@@ -469,13 +519,15 @@ namespace {
 
 } // namespace
 
+std::span<const ShortcutRegistry::CatalogEntry> ShortcutRegistry::catalog() { return kShortcutCatalog; }
+
 std::unique_ptr<Shortcut> ShortcutRegistry::create(std::string_view type, const ShortcutServices& s) {
   if (type == "wifi")
     return std::make_unique<WifiShortcut>(s.network);
   if (type == "bluetooth")
     return std::make_unique<BluetoothShortcut>(s.bluetooth);
   if (type == "nightlight")
-    return std::make_unique<NightlightShortcut>(s.nightLight);
+    return std::make_unique<NightlightShortcut>(s.nightLight, s.dependencies);
   if (type == "notification")
     return std::make_unique<NotificationShortcut>(s.notifications);
   if (type == "dark_mode")

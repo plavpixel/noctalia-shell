@@ -22,7 +22,8 @@ public:
     Name,
   };
 
-  WorkspacesWidget(WaylandConnection& connection, wl_output* output, DisplayMode displayMode);
+  WorkspacesWidget(WaylandConnection& connection, wl_output* output, DisplayMode displayMode, ColorSpec focusedColor,
+                   ColorSpec occupiedColor, ColorSpec emptyColor);
   ~WorkspacesWidget() override;
 
   void create() override;
@@ -57,11 +58,13 @@ private:
     float targetWidth = 0.0f;
     float currentX = 0.0f;
     float currentWidth = 0.0f;
-    float textInkCenterX = 0.0f;
   };
 
-  [[nodiscard]] static ColorRole workspaceFillRole(const Workspace& workspace);
-  [[nodiscard]] static ColorRole workspaceTextRole(const Workspace& workspace);
+  [[nodiscard]] ColorRole workspaceFillRole(const Workspace& workspace) const;
+  [[nodiscard]] ColorRole workspaceTextRole(const Workspace& workspace) const;
+  [[nodiscard]] float workspaceFillAlpha(const Workspace& workspace) const;
+  [[nodiscard]] static ColorRole onRoleForFill(ColorRole fill);
+  [[nodiscard]] ColorRole emptyWorkspaceTextRole() const;
 
   WaylandConnection& m_connection;
   wl_output* m_output = nullptr;
@@ -76,4 +79,7 @@ private:
   bool m_isVertical = false;
 
   AnimationManager::Id m_animId = 0;
+  ColorSpec m_focusedColor = colorSpecFromRole(ColorRole::Primary);
+  ColorSpec m_occupiedColor = colorSpecFromRole(ColorRole::Secondary);
+  ColorSpec m_emptyColor = colorSpecFromRole(ColorRole::Secondary);
 };

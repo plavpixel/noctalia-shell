@@ -199,6 +199,12 @@
       "wifi": "Wi-Fi",
       "bluetooth": "Bluetooth",
       "nightlight": "Night Light",
+      "nightlight-states": {
+        "off": "Night Light",
+        "scheduled-day": "Scheduled — day",
+        "scheduled-night": "Night Light",
+        "forced": "Always on"
+      },
       "notification": "DND",
       "dark-mode": {
         "dark": "Dark Mode",
@@ -485,9 +491,21 @@
       "close-all": "Close All"
     }
   },
+  "osd": {
+    "lock-keys": {
+      "caps-on": "Caps Lock On",
+      "caps-off": "Caps Lock Off",
+      "num-on": "Num Lock On",
+      "num-off": "Num Lock Off",
+      "scroll-on": "Scroll Lock On",
+      "scroll-off": "Scroll Lock Off"
+    }
+  },
   "tray": {
     "menu": {
-      "empty": "No menu items..."
+      "empty": "No menu items...",
+      "pin": "Pin",
+      "unpin": "Unpin"
     }
   },
   "notifications": {
@@ -686,6 +704,7 @@
         "appearance": "Appearance",
         "desktop": "Desktop",
         "dock": "Dock",
+        "panels": "Panels",
         "notifications": "Notifications",
         "backdrop": "Backdrop",
         "services": "Services",
@@ -702,11 +721,14 @@
         "built-in": "Built-in",
         "clipboard": "Clipboard",
         "community": "Community",
+        "control-center": "Control Center:",
         "directories": "Directories",
         "effects": "Effects",
         "focus-styling": "Focus Styling",
         "general": "General",
+        "grouping": "Grouping",
         "interface": "Interface",
+        "launcher": "Launcher",
         "layout": "Layout",
         "location": "Location",
         "media": "Media",
@@ -714,6 +736,7 @@
         "network": "Network",
         "night-light": "Night Light",
         "osd": "OSD",
+        "overview": "Overview",
         "pinned-apps": "Pinned Apps",
         "profile": "Profile",
         "screen-corners": "Screen Corners",
@@ -725,6 +748,7 @@
         "transition": "Transition",
         "user": "User",
         "weather": "Weather",
+        "wallpaper": "Wallpaper",
         "widget-list": "Widget List",
         "widgets": "Widgets"
       }
@@ -774,8 +798,8 @@
       },
       "weather": {
         "unit": {
-          "celsius": "Celsius",
-          "fahrenheit": "Fahrenheit"
+          "metric": "Metric",
+          "imperial": "Imperial"
         }
       },
       "wallpaper": {
@@ -807,6 +831,14 @@
       }
     },
     "widgets": {
+      "instances": {
+        "cpu": "CPU",
+        "date": "Date",
+        "input-volume": "Input Volume",
+        "output-volume": "Output Volume",
+        "ram": "RAM",
+        "temp": "Temperature"
+      },
       "categories": {
         "custom": "Custom",
         "info": "Info",
@@ -851,6 +883,7 @@
         "workspaces": "Workspaces"
       },
       "options": {
+        "always": "Always",
         "cpu-temp": "CPU Temperature",
         "cpu-usage": "CPU Usage",
         "disk-percent": "Disk Percent",
@@ -858,8 +891,11 @@
         "gauge": "Gauge",
         "graph": "Graph",
         "id": "ID",
+        "input": "Input",
         "name": "Name",
         "none": "None",
+        "on-hover": "On Hover",
+        "output": "Output",
         "ram-percent": "RAM Percent",
         "ram-used": "RAM Used",
         "short": "Short",
@@ -882,6 +918,10 @@
         "capsule": {
           "label": "Capsule",
           "description": "Draw a capsule behind this widget"
+        },
+        "capsule_group": {
+          "label": "Capsule Group",
+          "description": "Join nearby widgets with the same managed group"
         },
         "capsule_border": {
           "label": "Capsule Border",
@@ -907,13 +947,34 @@
           "label": "Color",
           "description": "Color role for widget foreground"
         },
+        "custom_image": {
+          "label": "Custom image",
+          "description": "Path to a custom image. Leave empty to use the icon glyph.",
+          "dialog-title": "Select custom image"
+        },
         "cycle_command": {
           "label": "Cycle Command",
           "description": "Command run when cycling keyboard layouts"
         },
+        "device": {
+          "label": "Device",
+          "description": "Audio stream to control"
+        },
         "display": {
           "label": "Display",
           "description": "Display mode for this widget"
+        },
+        "focused_color": {
+          "label": "Focused Color",
+          "description": "Color role used for the focused workspace"
+        },
+        "occupied_color": {
+          "label": "Occupied Color",
+          "description": "Color role used for occupied workspaces"
+        },
+        "empty_color": {
+          "label": "Empty Color",
+          "description": "Color role used for empty workspaces"
         },
         "format": {
           "label": "Format",
@@ -934,6 +995,18 @@
         "hidden": {
           "label": "Hidden Items",
           "description": "Tray item ids to hide"
+        },
+        "pinned": {
+          "label": "Pinned Items",
+          "description": "Tray item ids that stay visible in the bar when drawer mode is enabled"
+        },
+        "drawer": {
+          "label": "Use Drawer Panel",
+          "description": "Show a tray button in the bar and open items in a panel"
+        },
+        "drawer_columns": {
+          "label": "Drawer Columns",
+          "description": "Number of tray icons per row in the drawer panel"
         },
         "hide_when_off": {
           "label": "Hide When Off",
@@ -965,7 +1038,15 @@
         },
         "max_length": {
           "label": "Max Length",
-          "description": "Maximum text width in pixels"
+          "description": "Maximum widget length in pixels"
+        },
+        "min_length": {
+          "label": "Min Length",
+          "description": "Minimum widget length in pixels"
+        },
+        "title_scroll": {
+          "label": "Title Scroll",
+          "description": "When the widget title should scroll"
         },
         "mirrored": {
           "label": "Mirrored",
@@ -1011,10 +1092,6 @@
           "label": "Type",
           "description": "Built-in widget type for this named instance"
         },
-        "use_distro_logo": {
-          "label": "Use distribution logo",
-          "description": "Use the system distribution logo instead of a generic icon."
-        },
         "vertical_format": {
           "label": "Vertical Format",
           "description": "Optional format used on vertical bars"
@@ -1036,11 +1113,11 @@
         "padding": {
           "label": "Padding"
         },
-        "horizontal-margin": {
-          "label": "Horizontal Margin"
+        "ends-margin": {
+          "label": "Ends Margin"
         },
-        "vertical-margin": {
-          "label": "Vertical Margin"
+        "edge-margin": {
+          "label": "Edge Margin"
         },
         "corner-radius": {
           "label": "Corner Radius"
@@ -1239,11 +1316,11 @@
         "padding": {
           "description": "Inner padding of the dock"
         },
-        "horizontal-margin": {
-          "description": "Horizontal margin from screen edge"
+        "ends-margin": {
+          "description": "Inset from each end of the dock along its main axis"
         },
-        "vertical-margin": {
-          "description": "Vertical margin from screen edge"
+        "edge-margin": {
+          "description": "Distance from the nearest screen edge, positive values float the dock away from it"
         },
         "corner-radius": {
           "description": "Corner radius of the dock"
@@ -1259,6 +1336,28 @@
         },
         "reserve-space": {
           "description": "Reserve screen space for the dock"
+        }
+      },
+      "panels": {
+        "overview-shortcuts": {
+          "label": "Overview Shortcuts",
+          "description": "Choose up to six shortcut buttons for the overview tab"
+        },
+        "attach-control-center": {
+          "label": "Attach to Bar",
+          "description": "Attach the Control Center panel to the bar when a suitable bar is available"
+        },
+        "attach-launcher": {
+          "label": "Attach to Bar",
+          "description": "Attach the Launcher panel to the bar when a suitable bar is available"
+        },
+        "attach-clipboard": {
+          "label": "Attach to Bar",
+          "description": "Attach the Clipboard panel to the bar when a suitable bar is available"
+        },
+        "attach-wallpaper": {
+          "label": "Attach to Bar",
+          "description": "Attach the Wallpaper panel to the bar when a suitable bar is available"
         }
       },
       "backdrop": {
@@ -1362,8 +1461,8 @@
           "description": "Automatically detect location for weather"
         },
         "weather-unit": {
-          "label": "Temperature Unit",
-          "description": "Temperature unit for weather display"
+          "label": "Units",
+          "description": "Unit system for weather display"
         },
         "weather-address": {
           "label": "Address",
@@ -1406,11 +1505,13 @@
         },
         "ddcutil": {
           "label": "DDC/CI (ddcutil)",
-          "description": "Control external monitor brightness via DDC/CI"
+          "description": "Control external monitor brightness via DDC/CI",
+          "requires-ddcutil": "Install ddcutil to enable DDC/CI brightness control"
         },
         "night-light": {
           "label": "Night Light",
-          "description": "Shift screen colors warmer at night"
+          "description": "Shift screen colors warmer at night",
+          "requires-wlsunset": "Install wlsunset to enable Night Light"
         },
         "force-night-light": {
           "label": "Force Night Light",
@@ -1500,6 +1601,10 @@
           "label": "Widget Capsules",
           "description": "Wrap widgets in capsule backgrounds"
         },
+        "capsule-groups": {
+          "label": "Capsule Groups",
+          "description": "Create reusable groups for nearby widgets on this bar"
+        },
         "widget-color": {
           "label": "Widget Color",
           "description": "Default icon and label color role for widgets on this bar"
@@ -1556,11 +1661,11 @@
           "label": "Attach Panels",
           "description": "Attach panels opened from this bar to the bar edge"
         },
-        "horizontal-margin": {
-          "description": "Horizontal margin from screen edge"
+        "ends-margin": {
+          "description": "Inset from each end of the bar along its main axis"
         },
-        "vertical-margin": {
-          "description": "Vertical margin from screen edge"
+        "edge-margin": {
+          "description": "Distance from the nearest screen edge,  positive values float the bar away from it"
         },
         "corner-radius": {
           "description": "Corner radius of the bar"

@@ -114,6 +114,22 @@ InputArea* SearchPicker::filterInputArea() const noexcept {
   return m_input != nullptr ? m_input->inputArea() : nullptr;
 }
 
+void SearchPicker::setEnabled(bool enabled) {
+  if (m_enabled == enabled) {
+    return;
+  }
+  m_enabled = enabled;
+  if (m_input != nullptr) {
+    m_input->setEnabled(enabled);
+  }
+  for (auto& row : m_rows) {
+    if (row.area != nullptr) {
+      row.area->setEnabled(enabled);
+    }
+  }
+  setOpacity(enabled ? 1.0f : 0.55f);
+}
+
 void SearchPicker::doLayout(Renderer& renderer) {
   Flex::doLayout(renderer);
   for (const auto& row : m_rows) {
@@ -189,7 +205,6 @@ void SearchPicker::rebuildRows() {
     empty->setText(m_emptyText);
     empty->setFontSize(Style::fontSizeBody);
     empty->setColor(colorSpecFromRole(ColorRole::OnSurfaceVariant));
-    empty->setStableBaseline(true);
     content->addChild(std::move(empty));
     markLayoutDirty();
     return;
@@ -212,7 +227,6 @@ void SearchPicker::rebuildRows() {
     auto title = std::make_unique<Label>();
     title->setText(option.label);
     title->setFontSize(Style::fontSizeBody);
-    title->setStableBaseline(true);
     auto* titlePtr = static_cast<Label*>(row->addChild(std::move(title)));
 
     Label* detailPtr = nullptr;
@@ -220,13 +234,12 @@ void SearchPicker::rebuildRows() {
       auto detailLabel = std::make_unique<Label>();
       detailLabel->setText(detail);
       detailLabel->setFontSize(Style::fontSizeCaption);
-      detailLabel->setStableBaseline(true);
       detailPtr = static_cast<Label*>(row->addChild(std::move(detailLabel)));
     }
 
     auto area = std::make_unique<InputArea>();
     area->setCursorShape(WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER);
-    area->setEnabled(option.enabled);
+    area->setEnabled(m_enabled && option.enabled);
     area->setParticipatesInLayout(false);
     area->setOnEnter(
         [this, visibleIndex](const InputArea::PointerData& /*data*/) { setHighlightedVisibleIndex(visibleIndex); });

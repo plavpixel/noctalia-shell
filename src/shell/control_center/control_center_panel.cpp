@@ -1,10 +1,13 @@
 #include "shell/control_center/control_center_panel.h"
 
+#include "config/config_service.h"
 #include "i18n/i18n.h"
 #include "notification/notification_manager.h"
 #include "render/core/renderer.h"
 #include "render/scene/input_area.h"
 #include "shell/panel/panel_manager.h"
+#include "system/brightness_service.h"
+#include "system/dependency_service.h"
 #include "ui/controls/button.h"
 #include "ui/controls/flex.h"
 #include "ui/controls/label.h"
@@ -13,20 +16,21 @@
 
 using namespace control_center;
 
-ControlCenterPanel::ControlCenterPanel(NotificationManager* notifications, PipeWireService* audio, MprisService* mpris,
-                                       ConfigService* config, HttpClient* httpClient, WeatherService* weather,
-                                       PipeWireSpectrum* spectrum, UPowerService* upower,
-                                       PowerProfilesService* powerProfiles, NetworkService* network,
-                                       NetworkSecretAgent* networkSecrets, BluetoothService* bluetooth,
-                                       BluetoothAgent* bluetoothAgent, BrightnessService* brightness,
-                                       SystemMonitorService* sysmon, NightLightManager* nightLight,
-                                       noctalia::theme::ThemeService* theme, IdleInhibitor* idleInhibitor,
-                                       WaylandConnection* wayland, Wallpaper* wallpaper) {
+ControlCenterPanel::ControlCenterPanel(
+    NotificationManager* notifications, PipeWireService* audio, MprisService* mpris, ConfigService* config,
+    HttpClient* httpClient, WeatherService* weather, PipeWireSpectrum* spectrum, UPowerService* upower,
+    PowerProfilesService* powerProfiles, NetworkService* network, NetworkSecretAgent* networkSecrets,
+    BluetoothService* bluetooth, BluetoothAgent* bluetoothAgent, BrightnessService* brightness,
+    SystemMonitorService* sysmon, NightLightManager* nightLight, noctalia::theme::ThemeService* theme,
+    IdleInhibitor* idleInhibitor, DependencyService* dependencies, WaylandConnection* wayland, Wallpaper* wallpaper) {
   (void)upower;
+  m_config = config;
+  m_brightness = brightness;
   m_notificationManager = notifications;
+  m_dependencies = dependencies;
   m_tabs[tabIndex(TabId::Overview)] =
       std::make_unique<OverviewTab>(mpris, weather, audio, powerProfiles, config, network, bluetooth, nightLight, theme,
-                                    notifications, idleInhibitor, wayland, wallpaper);
+                                    notifications, idleInhibitor, dependencies, wayland, wallpaper);
   m_tabs[tabIndex(TabId::Media)] =
       std::make_unique<MediaTab>(mpris, httpClient, spectrum, wayland, PanelManager::instance().renderContext());
   m_tabs[tabIndex(TabId::Audio)] =
@@ -41,6 +45,10 @@ ControlCenterPanel::ControlCenterPanel(NotificationManager* notifications, PipeW
   m_tabButtons.fill(nullptr);
   m_tabContainers.fill(nullptr);
   m_tabHeaderActions.fill(nullptr);
+}
+
+bool ControlCenterPanel::prefersAttachedToBar() const noexcept {
+  return m_config == nullptr || m_config->config().shell.panel.attachControlCenter;
 }
 
 bool ControlCenterPanel::dismissTransientUi() {
@@ -239,7 +247,15 @@ void ControlCenterPanel::onFrameTick(float deltaMs) {
   }
 }
 
-void ControlCenterPanel::onOpen(std::string_view context) { selectTab(tabFromContext(context)); }
+void ControlCenterPanel::onOpen(std::string_view context) {
+  if (m_dependencies != nullptr) {
+    m_dependencies->rescan();
+  }
+  if (m_brightness != nullptr && m_config != nullptr) {
+    m_brightness->reload(m_config->config().brightness);
+  }
+  selectTab(tabFromContext(context));
+}
 
 bool ControlCenterPanel::isContextActive(std::string_view context) const {
   return m_activeTab == tabFromContext(context);

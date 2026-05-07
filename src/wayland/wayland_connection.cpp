@@ -17,6 +17,7 @@
 #include "viewporter-client-protocol.h"
 #include "virtual-keyboard-unstable-v1-client-protocol.h"
 #include "wayland/clipboard_service.h"
+#include "wayland/hyprland/focus_grab_service.h"
 #include "wayland/virtual_keyboard_service.h"
 #include "wlr-data-control-unstable-v1-client-protocol.h"
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
@@ -27,6 +28,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <utility>
 #include <wayland-client.h>
 
 namespace {
@@ -196,6 +198,9 @@ bool WaylandConnection::connect() {
     throw std::runtime_error("failed during Wayland output discovery roundtrip");
   }
 
+  m_focusGrabService = std::make_unique<FocusGrabService>();
+  m_focusGrabService->initialize(m_hyprlandFocusGrabManager);
+
   const std::string compositorHint(compositors::envHint());
   m_workspacesHandler.initialize(compositorHint);
   m_niriOutputBackend = std::make_unique<NiriOutputBackend>(compositorHint);
@@ -210,7 +215,13 @@ void WaylandConnection::setOutputChangeCallback(ChangeCallback callback) {
 
 void WaylandConnection::setWorkspaceChangeCallback(ChangeCallback callback) {
   m_workspaceChangeCallback = std::move(callback);
+  m_lastWorkspaceModelSnapshot = workspaceModelSnapshot();
   auto wrapper = [this]() {
+    auto nextSnapshot = workspaceModelSnapshot();
+    if (sameWorkspaceModelSnapshot(nextSnapshot, m_lastWorkspaceModelSnapshot)) {
+      return;
+    }
+    m_lastWorkspaceModelSnapshot = std::move(nextSnapshot);
     if (m_workspaceChangeCallback) {
       m_workspaceChangeCallback();
     }
@@ -315,6 +326,17 @@ wl_output* WaylandConnection::preferredPanelOutput(std::chrono::milliseconds poi
           return output.output;
         }
       }
+    }
+  }
+
+  if (wl_output* output = activeToplevelOutput(); output != nullptr) {
+    return output;
+  }
+
+  if (wl_surface* keyboardSurface = lastKeyboardSurface(); keyboardSurface != nullptr) {
+    const auto it = m_surfaceOutputMap.find(keyboardSurface);
+    if (it != m_surfaceOutputMap.end() && it->second != nullptr) {
+      return it->second;
     }
   }
 
@@ -435,6 +457,75 @@ std::vector<Workspace> WaylandConnection::workspaces(wl_output* output) const {
   return current;
 }
 
+std::vector<WaylandConnection::WorkspaceModelSnapshot> WaylandConnection::workspaceModelSnapshot() const {
+  auto sortedAssignments = [](std::vector<WorkspaceWindowAssignment> assignments) {
+    std::sort(assignments.begin(), assignments.end(), [](const auto& lhs, const auto& rhs) {
+      if (lhs.windowId != rhs.windowId) {
+        return lhs.windowId < rhs.windowId;
+      }
+      if (lhs.workspaceKey != rhs.workspaceKey) {
+        return lhs.workspaceKey < rhs.workspaceKey;
+      }
+      return lhs.appId < rhs.appId;
+    });
+    return assignments;
+  };
+
+  auto makeSnapshot = [&](const WaylandOutput* output) {
+    auto* wlOutput = output != nullptr ? output->output : nullptr;
+    return WorkspaceModelSnapshot{
+        .outputName = output != nullptr ? output->name : 0,
+        .workspaces = workspaces(wlOutput),
+        .assignments = sortedAssignments(workspaceWindowAssignments(wlOutput)),
+    };
+  };
+
+  std::vector<WorkspaceModelSnapshot> snapshot;
+  if (m_outputs.empty()) {
+    snapshot.push_back(makeSnapshot(nullptr));
+    return snapshot;
+  }
+
+  snapshot.reserve(m_outputs.size());
+  for (const auto& output : m_outputs) {
+    snapshot.push_back(makeSnapshot(&output));
+  }
+  return snapshot;
+}
+
+bool WaylandConnection::sameWorkspaceModelSnapshot(const std::vector<WorkspaceModelSnapshot>& lhs,
+                                                   const std::vector<WorkspaceModelSnapshot>& rhs) {
+  auto sameWorkspace = [](const Workspace& a, const Workspace& b) {
+    return a.id == b.id && a.name == b.name && a.coordinates == b.coordinates && a.active == b.active &&
+           a.urgent == b.urgent && a.occupied == b.occupied;
+  };
+  auto sameAssignment = [](const WorkspaceWindowAssignment& a, const WorkspaceWindowAssignment& b) {
+    return a.windowId == b.windowId && a.workspaceKey == b.workspaceKey && a.appId == b.appId && a.title == b.title &&
+           a.x == b.x && a.y == b.y;
+  };
+
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < lhs.size(); ++i) {
+    if (lhs[i].outputName != rhs[i].outputName || lhs[i].workspaces.size() != rhs[i].workspaces.size() ||
+        lhs[i].assignments.size() != rhs[i].assignments.size()) {
+      return false;
+    }
+    for (std::size_t w = 0; w < lhs[i].workspaces.size(); ++w) {
+      if (!sameWorkspace(lhs[i].workspaces[w], rhs[i].workspaces[w])) {
+        return false;
+      }
+    }
+    for (std::size_t a = 0; a < lhs[i].assignments.size(); ++a) {
+      if (!sameAssignment(lhs[i].assignments[a], rhs[i].assignments[a])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 std::optional<ActiveToplevel> WaylandConnection::activeToplevel() const { return m_toplevelsHandler.current(); }
 wl_output* WaylandConnection::activeToplevelOutput() const { return m_toplevelsHandler.currentOutput(); }
 std::vector<std::string> WaylandConnection::runningAppIds(wl_output* outputFilter) const {
@@ -490,6 +581,18 @@ std::vector<WorkspaceWindowAssignment> WaylandConnection::workspaceWindowAssignm
   }
   return result;
 }
+
+TaskbarAssignmentMode WaylandConnection::taskbarAssignmentMode() const noexcept {
+  return m_workspacesHandler.taskbarAssignmentMode();
+}
+
+std::unordered_map<std::uintptr_t, WorkspaceWindow>
+WaylandConnection::assignTaskbarWindows(const std::vector<TaskbarWindowCandidate>& windows,
+                                        wl_output* outputFilter) const {
+  return m_workspacesHandler.assignTaskbarWindows(windows, outputFilter);
+}
+
+const char* WaylandConnection::workspaceBackendName() const noexcept { return m_workspacesHandler.backendName(); }
 
 std::vector<ToplevelInfo> WaylandConnection::windowsForApp(const std::string& idLower, const std::string& wmClassLower,
                                                            wl_output* outputFilter) const {
@@ -595,6 +698,7 @@ wp_fractional_scale_manager_v1* WaylandConnection::fractionalScaleManager() cons
 hyprland_focus_grab_manager_v1* WaylandConnection::hyprlandFocusGrabManager() const noexcept {
   return m_hyprlandFocusGrabManager;
 }
+FocusGrabService* WaylandConnection::focusGrabService() const noexcept { return m_focusGrabService.get(); }
 wp_viewporter* WaylandConnection::viewporter() const noexcept { return m_viewporter; }
 
 void WaylandConnection::onBackgroundEffectCapabilities(std::uint32_t capabilities) noexcept {

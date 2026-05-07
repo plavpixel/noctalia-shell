@@ -3,6 +3,7 @@
 #include "config/config_service.h"
 #include "ui/palette.h"
 
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <string>
@@ -14,6 +15,7 @@ namespace settings {
 
   struct ToggleSetting {
     bool checked = false;
+    bool enabled = true; // false renders the toggle in a disabled/non-interactive state
   };
 
   struct SelectOption {
@@ -39,11 +41,19 @@ namespace settings {
   };
 
   struct SliderSetting {
+    SliderSetting() = default;
+    SliderSetting(float valueIn, float minValueIn, float maxValueIn, float stepIn, bool integerValueIn)
+        : value(valueIn), minValue(minValueIn), maxValue(maxValueIn), step(stepIn), integerValue(integerValueIn) {}
+
     float value = 0.0f;
     float minValue = 0.0f;
     float maxValue = 1.0f;
     float step = 0.01f;
     bool integerValue = false;
+    // Optional: when set, called with the user's just-committed value and returns extra overrides
+    // to commit atomically alongside it. Use for cross-field constraints (e.g. linked sliders).
+    std::function<std::vector<std::pair<std::vector<std::string>, ConfigOverrideValue>>(double committedValue)>
+        linkedCommit;
   };
 
   struct TextSetting {
@@ -64,6 +74,12 @@ namespace settings {
     // instead of a free-form text input, and row labels resolve to the option's friendly label.
     // Useful when the catalog of valid values is known.
     std::vector<SelectOption> suggestedOptions = {};
+  };
+
+  struct ShortcutListSetting {
+    std::vector<ShortcutConfig> items;
+    std::vector<SelectOption> suggestedOptions = {};
+    std::size_t maxItems = 0;
   };
 
   struct ColorSetting {
@@ -88,9 +104,9 @@ namespace settings {
     bool allowNone = false;
   };
 
-  using SettingControl =
-      std::variant<ToggleSetting, SelectSetting, SliderSetting, TextSetting, OptionalNumberSetting, ListSetting,
-                   ColorSetting, MultiSelectSetting, ButtonSetting, ColorRolePickerSetting, SearchPickerSetting>;
+  using SettingControl = std::variant<ToggleSetting, SelectSetting, SliderSetting, TextSetting, OptionalNumberSetting,
+                                      ListSetting, ShortcutListSetting, ColorSetting, MultiSelectSetting, ButtonSetting,
+                                      ColorRolePickerSetting, SearchPickerSetting>;
 
   struct SettingEntry {
     std::string section;
@@ -106,6 +122,8 @@ namespace settings {
   // Runtime conditions that gate optional sections (e.g. compositor-specific features).
   struct RegistryEnvironment {
     bool niriBackdropSupported = false;         // hide the [backdrop] section when false
+    bool ddcutilAvailable = false;              // disable ddcutil toggle when ddcutil is not on PATH
+    bool wlsunsetAvailable = false;             // hide night-light entries when wlsunset is not on PATH
     std::vector<SelectOption> availableOutputs; // monitor selectors available on this machine
     std::vector<SelectOption> communityPalettes;
     std::vector<SelectOption> communityTemplates;

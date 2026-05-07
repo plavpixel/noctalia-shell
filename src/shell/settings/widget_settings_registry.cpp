@@ -238,6 +238,28 @@ namespace settings {
       return spec;
     }
 
+    std::string widgetInstanceDisplayLabel(std::string_view name) {
+      if (name == "cpu") {
+        return tr("settings.widgets.instances.cpu");
+      }
+      if (name == "temp") {
+        return tr("settings.widgets.instances.temp");
+      }
+      if (name == "ram") {
+        return tr("settings.widgets.instances.ram");
+      }
+      if (name == "date") {
+        return tr("settings.widgets.instances.date");
+      }
+      if (name == "output_volume") {
+        return tr("settings.widgets.instances.output-volume");
+      }
+      if (name == "input_volume") {
+        return tr("settings.widgets.instances.input-volume");
+      }
+      return std::string(name);
+    }
+
     void addPickerEntry(std::vector<WidgetPickerEntry>& entries, std::unordered_set<std::string>& seen,
                         std::string value, std::string label, std::string description, std::string category,
                         WidgetReferenceKind kind) {
@@ -317,7 +339,7 @@ namespace settings {
 
     if (const auto it = cfg.widgets.find(std::string(name)); it != cfg.widgets.end()) {
       return WidgetReferenceInfo{
-          .title = std::string(name),
+          .title = widgetInstanceDisplayLabel(name),
           .detail = it->second.type.empty() ? tr("settings.entities.widget.detail.custom")
                                             : tr("settings.entities.widget.detail.type", "type", it->second.type),
           .badge = tr("settings.entities.widget.kinds.named"),
@@ -349,7 +371,7 @@ namespace settings {
       if (isBuiltInWidgetType(name)) {
         continue;
       }
-      addPickerEntry(entries, seen, name, name,
+      addPickerEntry(entries, seen, name, widgetInstanceDisplayLabel(name),
                      widget.type.empty() ? tr("settings.entities.widget.detail.custom")
                                          : tr("settings.entities.widget.detail.type", "type", widget.type),
                      tr("settings.entities.widget.kinds.named"), WidgetReferenceKind::Named);
@@ -386,6 +408,7 @@ namespace settings {
         boolSpec("anchor", false, true),
         colorRoleSpec("color", {}, true),
         boolSpec("capsule", false),
+        stringSpec("capsule_group"),
         colorRoleSpec("capsule_fill", "surface_variant"),
         colorRoleSpec("capsule_border", {}, true),
         colorRoleSpec("capsule_foreground", {}, true),
@@ -417,15 +440,28 @@ namespace settings {
         {"name", "settings.widgets.options.name"},
         {"none", "settings.widgets.options.none"},
     };
+    const std::vector<WidgetSettingSelectOption> mediaTitleScroll = {
+        {"none", "settings.widgets.options.none"},
+        {"always", "settings.widgets.options.always"},
+        {"on_hover", "settings.widgets.options.on-hover"},
+    };
+    const std::vector<WidgetSettingSelectOption> volumeDeviceOptions = {
+        {"output", "settings.widgets.options.output"},
+        {"input", "settings.widgets.options.input"},
+    };
+    const std::vector<WidgetSettingSelectOption> workspaceColorRoles = {
+        {"on_surface", ""}, {"primary", ""}, {"secondary", ""}, {"tertiary", ""}, {"error", ""},
+    };
 
     if (type == "active_window") {
+      add(doubleSpec("min_length", 80.0, 0.0, 800.0, 1.0));
       add(doubleSpec("max_length", 260.0, 40.0, 800.0, 1.0));
       add(doubleSpec("icon_size", static_cast<double>(Style::fontSizeBody), 8.0, 64.0, 1.0));
+      add(selectSpec("title_scroll", "none", mediaTitleScroll));
     } else if (type == "audio_visualizer") {
       add(doubleSpec("width", 56.0, 8.0, 400.0, 1.0));
-      add(doubleSpec("height", 16.0, 4.0, 120.0, 1.0));
       add(intSpec("bands", 16, 2.0, 128.0, 1.0));
-      add(boolSpec("mirrored", false));
+      add(boolSpec("mirrored", true));
       add(boolSpec("show_when_idle", false));
       add(colorRoleSpec("low_color", "primary"));
       add(colorRoleSpec("high_color", "primary"));
@@ -443,10 +479,10 @@ namespace settings {
       add(segmentedSpec("display", "short", shortFull));
     } else if (type == "launcher") {
       add(stringSpec("glyph", "search"));
-      add(boolSpec("use_distro_logo", false));
+      add(stringSpec("custom_image", ""));
     } else if (type == "control-center") {
       add(stringSpec("glyph", "noctalia"));
-      add(boolSpec("use_distro_logo", false));
+      add(stringSpec("custom_image", ""));
     } else if (type == "lock_keys") {
       add(boolSpec("show_caps_lock", true));
       add(boolSpec("show_num_lock", true));
@@ -454,8 +490,10 @@ namespace settings {
       add(boolSpec("hide_when_off", false));
       add(segmentedSpec("display", "short", shortFull));
     } else if (type == "media") {
+      add(doubleSpec("min_length", 80.0, 0.0, 800.0, 1.0));
       add(doubleSpec("max_length", 220.0, 40.0, 800.0, 1.0));
       add(doubleSpec("art_size", 16.0, 8.0, 96.0, 1.0));
+      add(selectSpec("title_scroll", "none", mediaTitleScroll));
     } else if (type == "network") {
       add(boolSpec("show_label", true));
     } else if (type == "notifications") {
@@ -478,7 +516,11 @@ namespace settings {
       add(boolSpec("group_by_workspace", false));
     } else if (type == "tray") {
       add(stringListSpec("hidden"));
+      add(stringListSpec("pinned"));
+      add(boolSpec("drawer", false));
+      add(intSpec("drawer_columns", 3, 1.0, 5.0, 1.0));
     } else if (type == "volume") {
+      add(segmentedSpec("device", "output", volumeDeviceOptions));
       add(boolSpec("show_label", true));
     } else if (type == "wallpaper") {
       add(stringSpec("glyph", "wallpaper-selector"));
@@ -487,6 +529,21 @@ namespace settings {
       add(boolSpec("show_condition", true));
     } else if (type == "workspaces") {
       add(segmentedSpec("display", "id", workspaceDisplay));
+      {
+        auto focusedColor = colorRoleSpec("focused_color", "primary");
+        focusedColor.options = workspaceColorRoles;
+        add(std::move(focusedColor));
+      }
+      {
+        auto occupiedColor = colorRoleSpec("occupied_color", "secondary");
+        occupiedColor.options = workspaceColorRoles;
+        add(std::move(occupiedColor));
+      }
+      {
+        auto emptyColor = colorRoleSpec("empty_color", "secondary");
+        emptyColor.options = workspaceColorRoles;
+        add(std::move(emptyColor));
+      }
     }
 
     return specs;

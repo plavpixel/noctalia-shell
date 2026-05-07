@@ -15,20 +15,22 @@
 #include <cctype>
 #include <cmath>
 #include <linux/input-event-codes.h>
+#include <utility>
 #include <wayland-client-protocol.h>
 
 namespace {
   constexpr Logger kLog("workspace");
-  constexpr float kWorkspaceGap = Style::spaceSm;
-  constexpr float kWorkspaceDotRatio = 0.62f;
+  constexpr float kWorkspaceGap = Style::spaceXs;
   constexpr float kWorkspacePillMinWidth = Style::controlHeight + Style::spaceXs;
   constexpr float kWorkspaceLabelPadH = Style::spaceSm;
-  constexpr float kWorkspacePillMinHeight = Style::fontSizeCaption;
+  constexpr float kWorkspacePillMinHeight = Style::fontSizeMini - Style::spaceXs;
   constexpr float kWorkspaceAnimDurationMs = static_cast<float>(Style::animNormal);
 } // namespace
 
-WorkspacesWidget::WorkspacesWidget(WaylandConnection& connection, wl_output* output, DisplayMode displayMode)
-    : m_connection(connection), m_output(output), m_displayMode(displayMode) {}
+WorkspacesWidget::WorkspacesWidget(WaylandConnection& connection, wl_output* output, DisplayMode displayMode,
+                                   ColorSpec focusedColor, ColorSpec occupiedColor, ColorSpec emptyColor)
+    : m_connection(connection), m_output(output), m_displayMode(displayMode), m_focusedColor(std::move(focusedColor)),
+      m_occupiedColor(std::move(occupiedColor)), m_emptyColor(std::move(emptyColor)) {}
 
 void WorkspacesWidget::create() {
   auto container = std::make_unique<InputArea>();
@@ -119,10 +121,10 @@ void WorkspacesWidget::rebuild(Renderer& renderer) {
   const auto& workspaces = m_cachedState;
   const float gap = kWorkspaceGap * m_contentScale;
   const float pillMin = kWorkspacePillMinWidth * m_contentScale;
-  const float labelFontSize = Style::fontSizeCaption * m_contentScale;
+  const float labelFontSize = Style::fontSizeMini * m_contentScale;
   // Workspace pills are decorative indicators, so keep their body closer to
   // caption text than to the full bar capsule height used by regular widgets.
-  const auto labelRefMetrics = renderer.measureText("A", labelFontSize, true);
+  const auto labelRefMetrics = renderer.measureFont(labelFontSize, true);
   const float labelRefHeight = labelRefMetrics.bottom - labelRefMetrics.top;
   float indicatorHeight = std::round(std::max(labelRefHeight, kWorkspacePillMinHeight * m_contentScale));
 
@@ -134,7 +136,6 @@ void WorkspacesWidget::rebuild(Renderer& renderer) {
 
   // Compute each slot's intrinsic label-padded width (if labelled).
   std::vector<float> labelPadded(workspaces.size(), 0.0f);
-  std::vector<float> labelInkCenterX(workspaces.size(), 0.0f);
   bool anyMultiChar = false;
   bool anyLabel = false;
   for (std::size_t i = 0; i < workspaces.size(); ++i) {
@@ -151,13 +152,8 @@ void WorkspacesWidget::rebuild(Renderer& renderer) {
     const float inkHeight = std::max(0.0f, tm.inkBottom - tm.inkTop);
     indicatorHeight = std::max(indicatorHeight, std::round(std::max(labelRefHeight, inkHeight)));
     labelPadded[i] = std::max(pillMin, inkWidth + (kWorkspaceLabelPadH * m_contentScale * 2.0f));
-    // Visible-ink horizontal center within the label box. Used to center digits
-    // by their visible glyph rather than by their advance width — for fonts where
-    // the ink is asymmetric within the advance (e.g. "4"), centering by advance
-    // looks visibly off.
-    labelInkCenterX[i] = (tm.inkLeft + tm.inkRight) * 0.5f;
   }
-  const float dotWidth = std::round(indicatorHeight * kWorkspaceDotRatio);
+  const float minCircleExtent = std::round(indicatorHeight);
 
   // Pick per-slot active/inactive widths so (active - inactive) is constant across slots,
   // guaranteeing stable total width regardless of which slot is active.
@@ -180,15 +176,15 @@ void WorkspacesWidget::rebuild(Renderer& renderer) {
     float inactiveWidth = 0.0f;
     float activeWidth = 0.0f;
     if (!anyLabel) {
-      inactiveWidth = dotWidth;
+      inactiveWidth = minCircleExtent;
       activeWidth = uniformActive;
     } else if (anyMultiChar) {
       // Uniform width — inactive must reserve enough room for its own label.
-      inactiveWidth = showLabel ? labelPadded[i] : dotWidth;
+      inactiveWidth = showLabel ? labelPadded[i] : minCircleExtent;
       activeWidth = inactiveWidth;
     } else {
       // All single-char labels: morph from square to uniform pill.
-      inactiveWidth = showLabel ? indicatorHeight : dotWidth;
+      inactiveWidth = showLabel ? indicatorHeight : minCircleExtent;
       activeWidth = uniformActive;
     }
 
@@ -202,13 +198,13 @@ void WorkspacesWidget::rebuild(Renderer& renderer) {
     item.showLabel = showLabel;
     item.inactiveWidth = inactiveWidth;
     item.activeWidth = activeWidth;
-    item.textInkCenterX = labelInkCenterX[i];
-
     auto indicator = std::make_unique<Box>();
     indicator->clearBorder();
     indicator->setRadius(indicatorHeight * 0.5f);
     indicator->setFrameSize(w, indicatorHeight);
-    indicator->setFill(colorSpecFromRole(workspaceFillRole(ws)));
+    const bool isEmpty = !ws.active && !ws.urgent && !ws.occupied;
+    indicator->setFill(colorSpecFromRole(workspaceFillRole(ws), workspaceFillAlpha(ws)));
+    indicator->clearBorder();
     item.indicator = static_cast<Box*>(area->addChild(std::move(indicator)));
 
     if (showLabel) {
@@ -216,7 +212,7 @@ void WorkspacesWidget::rebuild(Renderer& renderer) {
       text->setText(labels[i]);
       text->setFontSize(labelFontSize);
       text->setBold(true);
-      text->setColor(colorSpecFromRole(workspaceTextRole(ws)));
+      text->setColor(colorSpecFromRole(isEmpty ? emptyWorkspaceTextRole() : workspaceTextRole(ws)));
       text->measure(renderer);
       item.label = labels[i];
       item.text = static_cast<Label*>(area->addChild(std::move(text)));
@@ -282,10 +278,14 @@ void WorkspacesWidget::retarget(Renderer& renderer) {
   for (std::size_t i = 0; i < m_items.size(); ++i) {
     auto& it = m_items[i];
     if (it.indicator != nullptr) {
-      it.indicator->setFill(colorSpecFromRole(workspaceFillRole(m_cachedState[i])));
+      const auto& ws = m_cachedState[i];
+      it.indicator->setFill(colorSpecFromRole(workspaceFillRole(ws), workspaceFillAlpha(ws)));
+      it.indicator->clearBorder();
     }
     if (it.text != nullptr) {
-      it.text->setColor(colorSpecFromRole(workspaceTextRole(m_cachedState[i])));
+      const auto& ws = m_cachedState[i];
+      const bool isEmpty = !ws.active && !ws.urgent && !ws.occupied;
+      it.text->setColor(colorSpecFromRole(isEmpty ? emptyWorkspaceTextRole() : workspaceTextRole(ws)));
     }
   }
 
@@ -351,10 +351,8 @@ void WorkspacesWidget::applyItemLayout(std::size_t i) {
   if (it.text != nullptr) {
     const float itemW = m_isVertical ? m_indicatorHeight : it.currentWidth;
     const float itemH = m_isVertical ? it.currentWidth : m_indicatorHeight;
-    // Center on the visible ink center, not the advance box center, so digits
-    // with asymmetric ink (e.g. "4") sit optically centered in the slot.
-    const float textX = std::round(itemW * 0.5f - it.textInkCenterX);
-    it.text->setPosition(std::max(0.0f, textX), std::round((itemH - it.text->height()) * 0.5f));
+    const float textX = std::round((itemW - it.text->width()) * 0.5f);
+    it.text->setPosition(std::max(0.0f, textX), (itemH - it.text->height()) * 0.5f);
   }
   if (it.indicator != nullptr) {
     const float itemW = m_isVertical ? m_indicatorHeight : it.currentWidth;
@@ -441,28 +439,72 @@ std::optional<std::size_t> WorkspacesWidget::numericWorkspaceId(const Workspace&
   return std::nullopt;
 }
 
-ColorRole WorkspacesWidget::workspaceFillRole(const Workspace& workspace) {
+ColorRole WorkspacesWidget::workspaceFillRole(const Workspace& workspace) const {
   if (workspace.active) {
-    return ColorRole::Primary;
+    return m_focusedColor.role.value_or(ColorRole::Primary);
   }
   if (workspace.urgent) {
     return ColorRole::Error;
   }
   if (workspace.occupied) {
-    return ColorRole::Secondary;
+    return m_occupiedColor.role.value_or(ColorRole::Secondary);
   }
-  return ColorRole::SurfaceVariant;
+  return m_emptyColor.role.value_or(ColorRole::Secondary);
 }
 
-ColorRole WorkspacesWidget::workspaceTextRole(const Workspace& workspace) {
+ColorRole WorkspacesWidget::workspaceTextRole(const Workspace& workspace) const {
   if (workspace.active) {
-    return ColorRole::OnPrimary;
+    return onRoleForFill(workspaceFillRole(workspace));
   }
   if (workspace.urgent) {
     return ColorRole::OnError;
   }
   if (workspace.occupied) {
-    return ColorRole::OnSecondary;
+    return onRoleForFill(workspaceFillRole(workspace));
   }
-  return ColorRole::OnSurfaceVariant;
+  return onRoleForFill(workspaceFillRole(workspace));
+}
+
+float WorkspacesWidget::workspaceFillAlpha(const Workspace& workspace) const {
+  if (workspace.active) {
+    return m_focusedColor.alpha;
+  }
+  if (workspace.urgent) {
+    return 1.0f;
+  }
+  if (workspace.occupied) {
+    return m_occupiedColor.alpha;
+  }
+  return m_emptyColor.alpha * 0.55f;
+}
+
+ColorRole WorkspacesWidget::onRoleForFill(ColorRole fill) {
+  switch (fill) {
+  case ColorRole::Primary:
+    return ColorRole::OnPrimary;
+  case ColorRole::Secondary:
+    return ColorRole::OnSecondary;
+  case ColorRole::Tertiary:
+    return ColorRole::OnTertiary;
+  case ColorRole::Error:
+    return ColorRole::OnError;
+  case ColorRole::Surface:
+  case ColorRole::SurfaceVariant:
+  case ColorRole::Outline:
+  case ColorRole::Shadow:
+  case ColorRole::Hover:
+  case ColorRole::OnPrimary:
+  case ColorRole::OnSecondary:
+  case ColorRole::OnTertiary:
+  case ColorRole::OnError:
+  case ColorRole::OnSurface:
+  case ColorRole::OnSurfaceVariant:
+  case ColorRole::OnHover:
+    return ColorRole::OnSurface;
+  }
+  return ColorRole::OnSurface;
+}
+
+ColorRole WorkspacesWidget::emptyWorkspaceTextRole() const {
+  return onRoleForFill(m_emptyColor.role.value_or(ColorRole::Secondary));
 }

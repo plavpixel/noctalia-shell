@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -15,6 +16,7 @@ public:
   [[nodiscard]] virtual std::string_view iconOn() const = 0;
   [[nodiscard]] virtual std::string_view iconOff() const = 0;
   [[nodiscard]] virtual bool isToggle() const { return false; }
+  [[nodiscard]] virtual bool enabled() const { return true; }
 
   [[nodiscard]] virtual bool active() const { return false; }
 
@@ -28,5 +30,11 @@ struct ShortcutServices;
 
 class ShortcutRegistry {
 public:
+  struct CatalogEntry {
+    std::string_view type;
+    std::string_view labelKey;
+  };
+
+  [[nodiscard]] static std::span<const CatalogEntry> catalog();
   static std::unique_ptr<Shortcut> create(std::string_view type, const ShortcutServices& services);
 };

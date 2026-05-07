@@ -7,13 +7,13 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
 class Button;
 class Box;
 class ConfigService;
+class DependencyService;
 class Glyph;
 class GridView;
 class Image;
@@ -27,7 +27,6 @@ struct ShortcutPad {
   Button* button = nullptr;
   Glyph* glyph = nullptr;
   Label* label = nullptr;
-  std::optional<std::string> labelOverride;
 };
 
 class OverviewTab : public Tab {
@@ -35,7 +34,8 @@ public:
   OverviewTab(MprisService* mpris, WeatherService* weather, PipeWireService* audio, PowerProfilesService* powerProfiles,
               ConfigService* config, NetworkService* network, BluetoothService* bluetooth,
               NightLightManager* nightLight, noctalia::theme::ThemeService* theme, NotificationManager* notifications,
-              IdleInhibitor* idleInhibitor, WaylandConnection* wayland, Wallpaper* wallpaper = nullptr);
+              IdleInhibitor* idleInhibitor, DependencyService* dependencies, WaylandConnection* wayland,
+              Wallpaper* wallpaper = nullptr);
   ~OverviewTab() override;
 
   std::unique_ptr<Flex> create() override;

@@ -117,6 +117,43 @@ struct SpinnerStyle {
   float thickness = 2.0f;
 };
 
+enum class ScreenCornerPosition : std::uint8_t {
+  TopLeft,
+  TopRight,
+  BottomRight,
+  BottomLeft,
+};
+
+struct ScreenCornerStyle {
+  Color color = rgba(0.0f, 0.0f, 0.0f, 1.0f);
+  ScreenCornerPosition position = ScreenCornerPosition::TopLeft;
+  float exponent = 4.0f;
+  float softness = 1.0f;
+};
+
+constexpr bool operator==(const ScreenCornerStyle& lhs, const ScreenCornerStyle& rhs) noexcept {
+  return lhs.color == rhs.color && lhs.position == rhs.position && lhs.exponent == rhs.exponent &&
+         lhs.softness == rhs.softness;
+}
+
+enum class AudioSpectrumOrientation : std::uint8_t {
+  Horizontal,
+  Vertical,
+};
+
+struct AudioSpectrumStyle {
+  Color lowColor{};
+  Color highColor{};
+  AudioSpectrumOrientation orientation = AudioSpectrumOrientation::Horizontal;
+  bool mirrored = false;
+  bool centered = false;
+};
+
+constexpr bool operator==(const AudioSpectrumStyle& lhs, const AudioSpectrumStyle& rhs) noexcept {
+  return lhs.lowColor == rhs.lowColor && lhs.highColor == rhs.highColor && lhs.orientation == rhs.orientation &&
+         lhs.mirrored == rhs.mirrored && lhs.centered == rhs.centered;
+}
+
 enum class EffectType : std::uint8_t { None, Sun, Snow, Rain, Cloud, Fog, Stars };
 
 struct EffectStyle {

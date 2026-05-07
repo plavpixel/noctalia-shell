@@ -8,6 +8,7 @@
 #include "shell/control_center/shortcut_registry.h"
 #include "shell/panel/panel_manager.h"
 #include "shell/wallpaper/wallpaper.h"
+#include "system/dependency_service.h"
 #include "system/distro_info.h"
 #include "system/weather_service.h"
 #include "time/time_format.h"
@@ -55,10 +56,23 @@ OverviewTab::OverviewTab(MprisService* mpris, WeatherService* weather, PipeWireS
                          PowerProfilesService* powerProfiles, ConfigService* config, NetworkService* network,
                          BluetoothService* bluetooth, NightLightManager* nightLight,
                          noctalia::theme::ThemeService* theme, NotificationManager* notifications,
-                         IdleInhibitor* idleInhibitor, WaylandConnection* wayland, Wallpaper* wallpaper)
-    : m_mpris(mpris), m_weather(weather), m_config(config), m_wallpaper(wallpaper),
-      m_services{network, bluetooth,     nightLight, theme,   notifications, idleInhibitor,
-                 audio,   powerProfiles, mpris,      weather, config,        wayland} {}
+                         IdleInhibitor* idleInhibitor, DependencyService* dependencies, WaylandConnection* wayland,
+                         Wallpaper* wallpaper)
+    : m_mpris(mpris), m_weather(weather), m_config(config), m_wallpaper(wallpaper), m_services{
+                                                                                        .network = network,
+                                                                                        .bluetooth = bluetooth,
+                                                                                        .nightLight = nightLight,
+                                                                                        .theme = theme,
+                                                                                        .notifications = notifications,
+                                                                                        .idleInhibitor = idleInhibitor,
+                                                                                        .audio = audio,
+                                                                                        .powerProfiles = powerProfiles,
+                                                                                        .mpris = mpris,
+                                                                                        .weather = weather,
+                                                                                        .config = config,
+                                                                                        .dependencies = dependencies,
+                                                                                        .wayland = wayland,
+                                                                                    } {}
 
 OverviewTab::~OverviewTab() = default;
 
@@ -320,7 +334,8 @@ std::unique_ptr<Flex> OverviewTab::create() {
       continue;
     }
 
-    const std::string label = sc.label.has_value() ? *sc.label : shortcut->displayLabel();
+    const std::string label = shortcut->displayLabel();
+    const bool enabled = shortcut->enabled();
     const bool isActive = shortcut->isToggle() && shortcut->active();
 
     auto btn = std::make_unique<Button>();
@@ -334,7 +349,7 @@ std::unique_ptr<Flex> OverviewTab::create() {
     // that use raw fontSizeCaption (no * contentScale), while still scaling with shell.uiScale for consistency inside
     // Overview.
     btn->label()->setFontSize(Style::fontSizeMini * scale);
-    btn->label()->setStableBaseline(false);
+    btn->label()->setBaselineMode(LabelBaselineMode::InkCentered);
     btn->label()->setMaxLines(1);
     btn->label()->setTextAlign(TextAlign::Center);
     btn->setDirection(FlexDirection::Vertical);
@@ -343,6 +358,7 @@ std::unique_ptr<Flex> OverviewTab::create() {
     btn->setPadding(Style::spaceSm * scale);
     btn->setRadius(Style::radiusLg * scale);
     btn->setVariant(isActive ? ButtonVariant::Accent : ButtonVariant::Outline);
+    btn->setEnabled(enabled);
 
     const std::size_t padIdx = m_shortcutPads.size();
     btn->setOnClick([this, padIdx]() {
@@ -362,7 +378,6 @@ std::unique_ptr<Flex> OverviewTab::create() {
     pad.button = btnPtr;
     pad.glyph = btnPtr->glyph();
     pad.label = btnPtr->label();
-    pad.labelOverride = sc.label;
     m_shortcutPads.push_back(std::move(pad));
     grid->addChild(std::move(btn));
   }
@@ -457,12 +472,25 @@ void OverviewTab::doLayout(Renderer& renderer, float contentWidth, float bodyHei
     return std::max(1.0f, card->width() - (card->paddingLeft() + card->paddingRight()));
   };
   const float dateTimeWrap = innerWidth(m_dateTimeCard);
+  if (m_timeLabel != nullptr) {
+    m_timeLabel->setMaxWidth(dateTimeWrap);
+    m_timeLabel->setMaxLines(1);
+  }
 
-  for (Label* label : {m_timeLabel, m_dateLabel, m_weatherLine}) {
-    if (label != nullptr) {
-      label->setMaxWidth(dateTimeWrap);
-      label->setMaxLines(1);
-    }
+  float dateTimeRightWrap = dateTimeWrap;
+  if (m_timeLabel != nullptr && m_dateTimeCard != nullptr) {
+    dateTimeRightWrap = std::max(1.0f, dateTimeWrap - m_timeLabel->width() - m_dateTimeCard->gap());
+  }
+  if (m_dateLabel != nullptr) {
+    m_dateLabel->setMaxWidth(dateTimeRightWrap);
+    m_dateLabel->setMaxLines(1);
+  }
+  if (m_weatherLine != nullptr) {
+    const float weatherTextWrap =
+        std::max(1.0f, dateTimeRightWrap - (m_weatherGlyph != nullptr ? m_weatherGlyph->width() : 0.0f) -
+                           Style::spaceXs * contentScale());
+    m_weatherLine->setMaxWidth(weatherTextWrap);
+    m_weatherLine->setMaxLines(2);
   }
   // Grow the album art square to fill the media card height so the row feels balanced
   // when the card flex-grows. Done before label maxWidth so the text wrap width matches
@@ -904,21 +932,22 @@ void OverviewTab::sync(Renderer& renderer) {
 void OverviewTab::syncShortcuts() {
   for (auto& pad : m_shortcutPads) {
     auto& sc = *pad.shortcut;
+    const bool enabled = sc.enabled();
     const bool on = sc.isToggle() && sc.active();
 
     if (pad.button != nullptr) {
-      pad.button->setVariant(on ? ButtonVariant::Accent : ButtonVariant::Outline);
+      pad.button->setEnabled(enabled);
+      pad.button->setVariant((enabled && on) ? ButtonVariant::Accent : ButtonVariant::Outline);
     }
     if (pad.glyph != nullptr) {
       pad.glyph->setGlyph(sc.displayIcon());
     }
     if (pad.button != nullptr && pad.label != nullptr) {
-      const std::string label = pad.labelOverride.has_value() ? *pad.labelOverride : sc.displayLabel();
+      const std::string label = sc.displayLabel();
       if (pad.label->text() != label) {
         pad.button->setText(label);
       }
-      // setText() enables stable baseline for clocks; shortcut captions are not caps-stable single-line widgets.
-      pad.label->setStableBaseline(false);
+      pad.label->setBaselineMode(LabelBaselineMode::InkCentered);
     }
   }
 }

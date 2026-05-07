@@ -2,6 +2,7 @@
 
 #include "i18n/i18n.h"
 #include "render/core/color.h"
+#include "shell/control_center/shortcut_registry.h"
 #include "theme/builtin_palettes.h"
 #include "theme/builtin_templates.h"
 
@@ -67,6 +68,15 @@ namespace settings {
                           {"dysfunctional", "theme.scheme.dysfunctional"},
                           {"muted", "theme.scheme.muted"}},
                          selected);
+    }
+
+    std::vector<SelectOption> controlCenterShortcutOptions() {
+      std::vector<SelectOption> opts;
+      opts.reserve(ShortcutRegistry::catalog().size());
+      for (const auto& shortcut : ShortcutRegistry::catalog()) {
+        opts.push_back(SelectOption{std::string(shortcut.type), i18n::tr(shortcut.labelKey)});
+      }
+      return opts;
     }
 
     SelectSetting languageSelect(std::string_view selected) {
@@ -202,6 +212,8 @@ namespace settings {
       return "app-window";
     if (section == "dock")
       return "layout-bottombar";
+    if (section == "panels")
+      return "layout-dashboard";
     if (section == "backdrop")
       return "niri";
     if (section == "wallpaper")
@@ -481,13 +493,13 @@ namespace settings {
                                 tr("settings.schema.dock.item-spacing.description"), {"dock", "item_spacing"},
                                 SliderSetting{static_cast<float>(cfg.dock.itemSpacing), 0.0f, 100.0f, 1.0f, true},
                                 "gap"));
-    entries.push_back(makeEntry("dock", "layout", tr("settings.schema.shared.horizontal-margin.label"),
-                                tr("settings.schema.dock.horizontal-margin.description"), {"dock", "margin_h"},
-                                SliderSetting{static_cast<float>(cfg.dock.marginH), 0.0f, 500.0f, 1.0f, true},
+    entries.push_back(makeEntry("dock", "layout", tr("settings.schema.shared.ends-margin.label"),
+                                tr("settings.schema.dock.ends-margin.description"), {"dock", "margin_ends"},
+                                SliderSetting{static_cast<float>(cfg.dock.marginEnds), 0.0f, 500.0f, 1.0f, true},
                                 "gap inset"));
-    entries.push_back(makeEntry("dock", "layout", tr("settings.schema.shared.vertical-margin.label"),
-                                tr("settings.schema.dock.vertical-margin.description"), {"dock", "margin_v"},
-                                SliderSetting{static_cast<float>(cfg.dock.marginV), 0.0f, 100.0f, 1.0f, true},
+    entries.push_back(makeEntry("dock", "layout", tr("settings.schema.shared.edge-margin.label"),
+                                tr("settings.schema.dock.edge-margin.description"), {"dock", "margin_edge"},
+                                SliderSetting{static_cast<float>(cfg.dock.marginEdge), 0.0f, 100.0f, 1.0f, true},
                                 "gap inset"));
     entries.push_back(makeEntry("dock", "shape", tr("settings.schema.shared.corner-radius.label"),
                                 tr("settings.schema.dock.corner-radius.description"), {"dock", "radius"},
@@ -517,6 +529,30 @@ namespace settings {
     entries.push_back(makeEntry("dock", "pinned-apps", tr("settings.schema.dock.pinned-apps.label"),
                                 tr("settings.schema.dock.pinned-apps.description"), {"dock", "pinned"},
                                 ListSetting{.items = cfg.dock.pinned}, "favorites"));
+
+    // Panels
+    entries.push_back(makeEntry(
+        "panels", "control-center", tr("settings.schema.panels.overview-shortcuts.label"),
+        tr("settings.schema.panels.overview-shortcuts.description"), {"control_center", "shortcuts"},
+        ShortcutListSetting{
+            .items = cfg.controlCenter.shortcuts, .suggestedOptions = controlCenterShortcutOptions(), .maxItems = 6},
+        "quick settings shortcuts toggles wifi bluetooth caffeine night light dnd power media weather clipboard"));
+    entries.push_back(makeEntry("panels", "control-center", tr("settings.schema.panels.attach-control-center.label"),
+                                tr("settings.schema.panels.attach-control-center.description"),
+                                {"shell", "panel", "attach_control_center"},
+                                ToggleSetting{cfg.shell.panel.attachControlCenter}, "attach bar panel"));
+    entries.push_back(makeEntry("panels", "launcher", tr("settings.schema.panels.attach-launcher.label"),
+                                tr("settings.schema.panels.attach-launcher.description"),
+                                {"shell", "panel", "attach_launcher"}, ToggleSetting{cfg.shell.panel.attachLauncher},
+                                "attach bar panel"));
+    entries.push_back(makeEntry("panels", "clipboard", tr("settings.schema.panels.attach-clipboard.label"),
+                                tr("settings.schema.panels.attach-clipboard.description"),
+                                {"shell", "panel", "attach_clipboard"}, ToggleSetting{cfg.shell.panel.attachClipboard},
+                                "attach bar panel"));
+    entries.push_back(makeEntry("panels", "wallpaper", tr("settings.schema.panels.attach-wallpaper.label"),
+                                tr("settings.schema.panels.attach-wallpaper.description"),
+                                {"shell", "panel", "attach_wallpaper"}, ToggleSetting{cfg.shell.panel.attachWallpaper},
+                                "attach bar panel"));
 
     // Desktop
     entries.push_back(makeEntry("desktop", "widgets", tr("settings.schema.desktop.widgets.label"),
@@ -581,8 +617,8 @@ namespace settings {
                                 ToggleSetting{cfg.weather.autoLocate}, "forecast gps"));
     entries.push_back(makeEntry("services", "weather", tr("settings.schema.services.weather-unit.label"),
                                 tr("settings.schema.services.weather-unit.description"), {"weather", "unit"},
-                                asSegmented(plainSelect({{"celsius", "settings.options.weather.unit.celsius"},
-                                                         {"fahrenheit", "settings.options.weather.unit.fahrenheit"}},
+                                asSegmented(plainSelect({{"metric", "settings.options.weather.unit.metric"},
+                                                         {"imperial", "settings.options.weather.unit.imperial"}},
                                                         cfg.weather.unit)),
                                 "temperature"));
     entries.push_back(makeEntry(
@@ -620,44 +656,99 @@ namespace settings {
                                 {"shell", "mpris", "blacklist"}, ListSetting{.items = cfg.shell.mpris.blacklist},
                                 "mpris media player dbus session blacklist"));
     entries.push_back(makeEntry("services", "brightness", tr("settings.schema.services.ddcutil.label"),
-                                tr("settings.schema.services.ddcutil.description"), {"brightness", "enable_ddcutil"},
-                                ToggleSetting{cfg.brightness.enableDdcutil}, "monitor ddcutil"));
-    entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.night-light.label"),
-                                tr("settings.schema.services.night-light.description"), {"nightlight", "enabled"},
-                                ToggleSetting{cfg.nightlight.enabled}, "wlsunset"));
-    entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.force-night-light.label"),
-                                tr("settings.schema.services.force-night-light.description"), {"nightlight", "force"},
-                                ToggleSetting{cfg.nightlight.force}, "wlsunset"));
-    entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.use-weather-location.label"),
-                                tr("settings.schema.services.use-weather-location.description"),
-                                {"nightlight", "use_weather_location"},
-                                ToggleSetting{cfg.nightlight.useWeatherLocation}, "location"));
-    entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.night-light-start-time.label"),
-                                tr("settings.schema.services.night-light-start-time.description"),
-                                {"nightlight", "start_time"}, TextSetting{cfg.nightlight.startTime, "20:30"},
-                                "time schedule sunset"));
-    entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.night-light-stop-time.label"),
-                                tr("settings.schema.services.night-light-stop-time.description"),
-                                {"nightlight", "stop_time"}, TextSetting{cfg.nightlight.stopTime, "07:30"},
-                                "time schedule sunrise"));
-    entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.latitude.label"),
-                                tr("settings.schema.services.latitude.description"), {"nightlight", "latitude"},
-                                OptionalNumberSetting{cfg.nightlight.latitude, -90.0, 90.0, "52.5200"},
-                                "coordinate location sunrise sunset", true));
-    entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.longitude.label"),
-                                tr("settings.schema.services.longitude.description"), {"nightlight", "longitude"},
-                                OptionalNumberSetting{cfg.nightlight.longitude, -180.0, 180.0, "13.4050"},
-                                "coordinate location sunrise sunset", true));
-    entries.push_back(
-        makeEntry("services", "night-light", tr("settings.schema.services.day-temperature.label"),
-                  tr("settings.schema.services.day-temperature.description"), {"nightlight", "temperature_day"},
-                  SliderSetting{static_cast<float>(cfg.nightlight.dayTemperature), 1000.0f, 10000.0f, 100.0f, true},
-                  "wlsunset kelvin"));
-    entries.push_back(
-        makeEntry("services", "night-light", tr("settings.schema.services.night-temperature.label"),
-                  tr("settings.schema.services.night-temperature.description"), {"nightlight", "temperature_night"},
-                  SliderSetting{static_cast<float>(cfg.nightlight.nightTemperature), 1000.0f, 10000.0f, 100.0f, true},
-                  "wlsunset kelvin"));
+                                env.ddcutilAvailable ? tr("settings.schema.services.ddcutil.description")
+                                                     : tr("settings.schema.services.ddcutil.requires-ddcutil"),
+                                {"brightness", "enable_ddcutil"},
+                                ToggleSetting{.checked = cfg.brightness.enableDdcutil, .enabled = env.ddcutilAvailable},
+                                "monitor ddcutil"));
+    if (!env.wlsunsetAvailable) {
+      // Show only the master toggle in a disabled state so users can discover the feature
+      // and learn the dependency requirement. The remaining settings are hidden until wlsunset is installed.
+      entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.night-light.label"),
+                                  tr("settings.schema.services.night-light.requires-wlsunset"),
+                                  {"nightlight", "enabled"},
+                                  ToggleSetting{.checked = cfg.nightlight.enabled, .enabled = false}, "wlsunset"));
+    } else {
+      entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.night-light.label"),
+                                  tr("settings.schema.services.night-light.description"), {"nightlight", "enabled"},
+                                  ToggleSetting{cfg.nightlight.enabled}, "wlsunset"));
+      entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.force-night-light.label"),
+                                  tr("settings.schema.services.force-night-light.description"), {"nightlight", "force"},
+                                  ToggleSetting{cfg.nightlight.force}, "wlsunset"));
+      entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.use-weather-location.label"),
+                                  tr("settings.schema.services.use-weather-location.description"),
+                                  {"nightlight", "use_weather_location"},
+                                  ToggleSetting{cfg.nightlight.useWeatherLocation}, "location"));
+      entries.push_back(
+          makeEntry("services", "night-light", tr("settings.schema.services.night-light-start-time.label"),
+                    tr("settings.schema.services.night-light-start-time.description"), {"nightlight", "start_time"},
+                    TextSetting{cfg.nightlight.startTime, "20:30"}, "time schedule sunset"));
+      entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.night-light-stop-time.label"),
+                                  tr("settings.schema.services.night-light-stop-time.description"),
+                                  {"nightlight", "stop_time"}, TextSetting{cfg.nightlight.stopTime, "07:30"},
+                                  "time schedule sunrise"));
+      entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.latitude.label"),
+                                  tr("settings.schema.services.latitude.description"), {"nightlight", "latitude"},
+                                  OptionalNumberSetting{cfg.nightlight.latitude, -90.0, 90.0, "52.5200"},
+                                  "coordinate location sunrise sunset", true));
+      entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.longitude.label"),
+                                  tr("settings.schema.services.longitude.description"), {"nightlight", "longitude"},
+                                  OptionalNumberSetting{cfg.nightlight.longitude, -180.0, 180.0, "13.4050"},
+                                  "coordinate location sunrise sunset", true));
+      // Both sliders span the same range; the day > night invariant is enforced at commit time
+      // via SliderSetting::linkedCommit, which pushes the other temperature when needed.
+      const float tempMin = static_cast<float>(NightLightConfig::kTemperatureMin);
+      const float tempMax = static_cast<float>(NightLightConfig::kTemperatureMax);
+      const float tempStep = static_cast<float>(NightLightConfig::kTemperatureGap);
+
+      SliderSetting daySlider{static_cast<float>(cfg.nightlight.dayTemperature), tempMin, tempMax, tempStep, true};
+      daySlider.linkedCommit = [curNight = cfg.nightlight.nightTemperature](double v) {
+        std::vector<std::pair<std::vector<std::string>, ConfigOverrideValue>> overrides;
+        const auto newDay = std::clamp(static_cast<std::int32_t>(std::lround(v)), NightLightConfig::kTemperatureMin,
+                                       NightLightConfig::kTemperatureMax);
+        if (newDay - NightLightConfig::kTemperatureGap < curNight) {
+          std::int32_t pushedNight =
+              std::max(NightLightConfig::kTemperatureMin, newDay - NightLightConfig::kTemperatureGap);
+          if (pushedNight + NightLightConfig::kTemperatureGap > newDay) {
+            // Day was below kTemperatureMin + kTemperatureGap; bump day up too. The slider value
+            // refresh comes through the rebuilt registry on the next config reload.
+            const std::int32_t bumpedDay =
+                std::min(NightLightConfig::kTemperatureMax, pushedNight + NightLightConfig::kTemperatureGap);
+            overrides.emplace_back(std::vector<std::string>{"nightlight", "temperature_day"},
+                                   static_cast<std::int64_t>(bumpedDay));
+          }
+          overrides.emplace_back(std::vector<std::string>{"nightlight", "temperature_night"},
+                                 static_cast<std::int64_t>(pushedNight));
+        }
+        return overrides;
+      };
+      entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.day-temperature.label"),
+                                  tr("settings.schema.services.day-temperature.description"),
+                                  {"nightlight", "temperature_day"}, std::move(daySlider), "wlsunset kelvin"));
+
+      SliderSetting nightSlider{static_cast<float>(cfg.nightlight.nightTemperature), tempMin, tempMax, tempStep, true};
+      nightSlider.linkedCommit = [curDay = cfg.nightlight.dayTemperature](double v) {
+        std::vector<std::pair<std::vector<std::string>, ConfigOverrideValue>> overrides;
+        const auto newNight = std::clamp(static_cast<std::int32_t>(std::lround(v)), NightLightConfig::kTemperatureMin,
+                                         NightLightConfig::kTemperatureMax);
+        if (curDay - NightLightConfig::kTemperatureGap < newNight) {
+          std::int32_t pushedDay =
+              std::min(NightLightConfig::kTemperatureMax, newNight + NightLightConfig::kTemperatureGap);
+          if (pushedDay - NightLightConfig::kTemperatureGap < newNight) {
+            const std::int32_t bumpedNight =
+                std::max(NightLightConfig::kTemperatureMin, pushedDay - NightLightConfig::kTemperatureGap);
+            overrides.emplace_back(std::vector<std::string>{"nightlight", "temperature_night"},
+                                   static_cast<std::int64_t>(bumpedNight));
+          }
+          overrides.emplace_back(std::vector<std::string>{"nightlight", "temperature_day"},
+                                 static_cast<std::int64_t>(pushedDay));
+        }
+        return overrides;
+      };
+      entries.push_back(makeEntry("services", "night-light", tr("settings.schema.services.night-temperature.label"),
+                                  tr("settings.schema.services.night-temperature.description"),
+                                  {"nightlight", "temperature_night"}, std::move(nightSlider), "wlsunset kelvin"));
+    }
 
     // Notifications
     entries.push_back(makeEntry("notifications", "general", tr("settings.schema.notifications.daemon.label"),
@@ -721,13 +812,13 @@ namespace settings {
       entries.push_back(makeEntry(section, "layout", tr("settings.schema.bar.content-scale.label"),
                                   tr("settings.schema.bar.content-scale.description"), path("scale"),
                                   SliderSetting{selectedBar->scale, 0.5f, 4.0f, 0.05f, false}, "zoom size"));
-      entries.push_back(makeEntry(section, "layout", tr("settings.schema.shared.horizontal-margin.label"),
-                                  tr("settings.schema.bar.horizontal-margin.description"), path("margin_h"),
-                                  SliderSetting{static_cast<float>(selectedBar->marginH), 0.0f, 500.0f, 1.0f, true},
+      entries.push_back(makeEntry(section, "layout", tr("settings.schema.shared.ends-margin.label"),
+                                  tr("settings.schema.bar.ends-margin.description"), path("margin_ends"),
+                                  SliderSetting{static_cast<float>(selectedBar->marginEnds), 0.0f, 500.0f, 1.0f, true},
                                   "gap inset"));
-      entries.push_back(makeEntry(section, "layout", tr("settings.schema.shared.vertical-margin.label"),
-                                  tr("settings.schema.bar.vertical-margin.description"), path("margin_v"),
-                                  SliderSetting{static_cast<float>(selectedBar->marginV), 0.0f, 100.0f, 1.0f, true},
+      entries.push_back(makeEntry(section, "layout", tr("settings.schema.shared.edge-margin.label"),
+                                  tr("settings.schema.bar.edge-margin.description"), path("margin_edge"),
+                                  SliderSetting{static_cast<float>(selectedBar->marginEdge), 0.0f, 100.0f, 1.0f, true},
                                   "gap inset"));
       entries.push_back(makeEntry(section, "layout", tr("settings.schema.bar.content-padding.label"),
                                   tr("settings.schema.bar.content-padding.description"), path("padding"),
@@ -772,6 +863,9 @@ namespace settings {
       entries.push_back(makeEntry(section, "widgets", tr("settings.schema.bar.widget-color.label"),
                                   tr("settings.schema.bar.widget-color.description"), path("color"),
                                   optionalColorRolePicker(selectedBar->widgetColor), "color role foreground", true));
+      entries.push_back(makeEntry(section, "grouping", tr("settings.schema.bar.capsule-groups.label"),
+                                  tr("settings.schema.bar.capsule-groups.description"), path("capsule_groups"),
+                                  ListSetting{.items = selectedBar->widgetCapsuleGroups}, "grouped capsules"));
       entries.push_back(makeEntry(section, "widgets", tr("settings.schema.bar.capsule-fill.label"),
                                   tr("settings.schema.bar.capsule-fill.description"), path("capsule_fill"),
                                   colorRolePicker(selectedBar->widgetCapsuleFill), "color role pill", true));
@@ -840,13 +934,15 @@ namespace settings {
                                   tr("settings.schema.bar.content-scale.description"), mpath("scale"),
                                   SliderSetting{ovr.scale.value_or(bar.scale), 0.5f, 4.0f, 0.05f, false}, "zoom size"));
       entries.push_back(makeEntry(
-          section, "layout", tr("settings.schema.shared.horizontal-margin.label"),
-          tr("settings.schema.bar.horizontal-margin.description"), mpath("margin_h"),
-          SliderSetting{static_cast<float>(ovr.marginH.value_or(bar.marginH)), 0.0f, 500.0f, 1.0f, true}, "gap inset"));
+          section, "layout", tr("settings.schema.shared.ends-margin.label"),
+          tr("settings.schema.bar.ends-margin.description"), mpath("margin_ends"),
+          SliderSetting{static_cast<float>(ovr.marginEnds.value_or(bar.marginEnds)), 0.0f, 500.0f, 1.0f, true},
+          "gap inset"));
       entries.push_back(makeEntry(
-          section, "layout", tr("settings.schema.shared.vertical-margin.label"),
-          tr("settings.schema.bar.vertical-margin.description"), mpath("margin_v"),
-          SliderSetting{static_cast<float>(ovr.marginV.value_or(bar.marginV)), 0.0f, 100.0f, 1.0f, true}, "gap inset"));
+          section, "layout", tr("settings.schema.shared.edge-margin.label"),
+          tr("settings.schema.bar.edge-margin.description"), mpath("margin_edge"),
+          SliderSetting{static_cast<float>(ovr.marginEdge.value_or(bar.marginEdge)), 0.0f, 100.0f, 1.0f, true},
+          "gap inset"));
       entries.push_back(makeEntry(
           section, "layout", tr("settings.schema.bar.content-padding.label"),
           tr("settings.schema.bar.content-padding.description"), mpath("padding"),
@@ -915,6 +1011,10 @@ namespace settings {
           tr("settings.schema.bar.capsule-border.description"), mpath("capsule_border"),
           capsuleBorderRolePicker(ovr.widgetCapsuleBorderSpecified ? ovr.widgetCapsuleBorder : bar.widgetCapsuleBorder),
           "color role pill outline", true));
+      entries.push_back(makeEntry(section, "grouping", tr("settings.schema.bar.capsule-groups.label"),
+                                  tr("settings.schema.bar.capsule-groups.description"), mpath("capsule_groups"),
+                                  ListSetting{.items = ovr.widgetCapsuleGroups.value_or(bar.widgetCapsuleGroups)},
+                                  "grouped capsules"));
       entries.push_back(
           makeEntry(section, "widgets", tr("settings.schema.bar.capsule-padding.label"),
                     tr("settings.schema.bar.capsule-padding.description"), mpath("capsule_padding"),

@@ -10,6 +10,7 @@
 #include "ui/controls/glyph.h"
 #include "ui/controls/input.h"
 #include "ui/controls/label.h"
+#include "ui/controls/list_editor.h"
 #include "ui/controls/search_picker.h"
 #include "ui/controls/segmented.h"
 #include "ui/controls/select.h"
@@ -25,9 +26,11 @@
 #include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <format>
+#include <functional>
 #include <limits>
 #include <locale>
 #include <memory>
@@ -35,6 +38,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -48,7 +52,6 @@ namespace settings {
       label->setFontSize(fontSize);
       label->setColor(color);
       label->setBold(bold);
-      label->setStableBaseline(true);
       return label;
     }
 
@@ -208,11 +211,11 @@ namespace settings {
       if (key == "scale") {
         return override->scale.has_value();
       }
-      if (key == "margin_h") {
-        return override->marginH.has_value();
+      if (key == "margin_ends") {
+        return override->marginEnds.has_value();
       }
-      if (key == "margin_v") {
-        return override->marginV.has_value();
+      if (key == "margin_edge") {
+        return override->marginEdge.has_value();
       }
       if (key == "padding") {
         return override->padding.has_value();
@@ -256,6 +259,9 @@ namespace settings {
       if (key == "color") {
         return override->widgetColor.has_value();
       }
+      if (key == "capsule_groups") {
+        return override->widgetCapsuleGroups.has_value();
+      }
       if (key == "capsule_padding") {
         return override->widgetCapsulePadding.has_value();
       }
@@ -272,6 +278,84 @@ namespace settings {
         return override->endWidgets.has_value();
       }
       return false;
+    }
+
+    bool isBarCapsuleGroupsPath(const std::vector<std::string>& path) {
+      return path.size() == 3 && path[0] == "bar" && path[2] == "capsule_groups";
+    }
+
+    bool isMonitorCapsuleGroupsPath(const std::vector<std::string>& path) {
+      return path.size() == 5 && path[0] == "bar" && path[2] == "monitor" && path[4] == "capsule_groups";
+    }
+
+    bool isCapsuleGroupsPath(const std::vector<std::string>& path) {
+      return isBarCapsuleGroupsPath(path) || isMonitorCapsuleGroupsPath(path);
+    }
+
+    void collectWidgetNames(std::unordered_set<std::string>& widgetNames, const std::vector<std::string>& widgets) {
+      for (const auto& widget : widgets) {
+        widgetNames.insert(widget);
+      }
+    }
+
+    std::unordered_set<std::string> scopedBarWidgetNames(const Config& cfg, const std::vector<std::string>& path) {
+      std::unordered_set<std::string> widgetNames;
+
+      const auto* bar = path.size() >= 2 ? findBar(cfg, path[1]) : nullptr;
+      if (bar == nullptr) {
+        return widgetNames;
+      }
+
+      if (isBarCapsuleGroupsPath(path)) {
+        collectWidgetNames(widgetNames, bar->startWidgets);
+        collectWidgetNames(widgetNames, bar->centerWidgets);
+        collectWidgetNames(widgetNames, bar->endWidgets);
+        for (const auto& ovr : bar->monitorOverrides) {
+          collectWidgetNames(widgetNames, ovr.startWidgets.value_or(bar->startWidgets));
+          collectWidgetNames(widgetNames, ovr.centerWidgets.value_or(bar->centerWidgets));
+          collectWidgetNames(widgetNames, ovr.endWidgets.value_or(bar->endWidgets));
+        }
+        return widgetNames;
+      }
+
+      const auto* ovr = path.size() >= 4 ? findMonitorOverride(*bar, path[3]) : nullptr;
+      if (ovr == nullptr) {
+        return widgetNames;
+      }
+
+      collectWidgetNames(widgetNames, ovr->startWidgets.value_or(bar->startWidgets));
+      collectWidgetNames(widgetNames, ovr->centerWidgets.value_or(bar->centerWidgets));
+      collectWidgetNames(widgetNames, ovr->endWidgets.value_or(bar->endWidgets));
+      return widgetNames;
+    }
+
+    std::vector<std::pair<std::vector<std::string>, ConfigOverrideValue>>
+    capsuleGroupRemovalOverrides(const Config& cfg, const std::vector<std::string>& path, std::string_view removedGroup,
+                                 std::vector<std::string> updatedGroups) {
+      std::vector<std::pair<std::vector<std::string>, ConfigOverrideValue>> overrides;
+      overrides.push_back({path, std::move(updatedGroups)});
+
+      if (!isCapsuleGroupsPath(path)) {
+        return overrides;
+      }
+
+      const std::string trimmedRemoved = StringUtils::trim(removedGroup);
+      if (trimmedRemoved.empty()) {
+        return overrides;
+      }
+
+      for (const auto& widgetName : scopedBarWidgetNames(cfg, path)) {
+        const auto widgetIt = cfg.widgets.find(widgetName);
+        if (widgetIt == cfg.widgets.end() || !widgetIt->second.hasSetting("capsule_group")) {
+          continue;
+        }
+        if (StringUtils::trim(widgetIt->second.getString("capsule_group", "")) != trimmedRemoved) {
+          continue;
+        }
+        overrides.push_back({{"widget", widgetName, "capsule_group"}, std::string()});
+      }
+
+      return overrides;
     }
 
   } // namespace
@@ -295,8 +379,7 @@ namespace settings {
       section->setAlign(FlexAlign::Stretch);
       section->setGap(Style::spaceSm * scale);
       section->setPadding(Style::spaceLg * scale);
-      section->setCardStyle(scale);
-      section->setFill(colorSpecFromRole(ColorRole::Surface));
+      section->setFill(clearColorSpec());
 
       auto titleRow = std::make_unique<Flex>();
       titleRow->setDirection(FlexDirection::Horizontal);
@@ -350,9 +433,11 @@ namespace settings {
     };
 
     const auto makeRow = [&](Flex& section, const SettingEntry& entry, std::unique_ptr<Node> control) {
-      const bool overridden = (ctx.configService != nullptr && ctx.configService->hasOverride(entry.path));
+      const bool overridden = (ctx.configService != nullptr && ctx.configService->hasEffectiveOverride(entry.path));
+      const bool redundantGuiOverride =
+          ctx.configService != nullptr && ctx.configService->hasOverride(entry.path) && !overridden;
       const bool monitorSetting = isMonitorOverrideSettingPath(entry.path);
-      const bool monitorExplicit = monitorOverrideHasExplicitValue(cfg, entry.path);
+      const bool monitorExplicit = monitorOverrideHasExplicitValue(cfg, entry.path) && !redundantGuiOverride;
       const bool monitorInherited = monitorSetting && !monitorExplicit;
 
       auto row = std::make_unique<Flex>();
@@ -379,7 +464,7 @@ namespace settings {
       const auto makeBadge = [&](std::string_view label, const ColorSpec& fill, const ColorSpec& color) {
         auto badge = std::make_unique<Flex>();
         badge->setAlign(FlexAlign::Center);
-        badge->setPadding(1.0f * scale, Style::spaceXs * scale);
+        badge->setPadding(0, Style::spaceXs * scale);
         badge->setRadius(Style::radiusSm * scale);
         badge->setFill(fill);
         badge->addChild(makeLabel(label, Style::fontSizeCaption * scale, color, true));
@@ -409,7 +494,6 @@ namespace settings {
       if (!entry.subtitle.empty()) {
         auto detail = makeLabel(entry.subtitle, Style::fontSizeCaption * scale,
                                 colorSpecFromRole(ColorRole::OnSurfaceVariant), false);
-        detail->setMaxWidth(360.0f * scale);
         copy->addChild(std::move(detail));
       }
 
@@ -428,11 +512,14 @@ namespace settings {
       section.addChild(std::move(row));
     };
 
-    const auto makeToggle = [&](bool checked, std::vector<std::string> path) {
+    const auto makeToggle = [&](bool checked, bool enabled, std::vector<std::string> path) {
       auto toggle = std::make_unique<Toggle>();
       toggle->setScale(scale);
       toggle->setChecked(checked);
-      toggle->setOnChange([setOverride = ctx.setOverride, path](bool value) { setOverride(path, value); });
+      toggle->setEnabled(enabled);
+      if (enabled) {
+        toggle->setOnChange([setOverride = ctx.setOverride, path](bool value) { setOverride(path, value); });
+      }
       return toggle;
     };
 
@@ -487,70 +574,86 @@ namespace settings {
       return select;
     };
 
-    const auto makeSlider = [&](float value, float minValue, float maxValue, float step, std::vector<std::string> path,
-                                bool integerValue = false) {
-      auto wrap = std::make_unique<Flex>();
-      wrap->setDirection(FlexDirection::Horizontal);
-      wrap->setAlign(FlexAlign::Center);
-      wrap->setGap(Style::spaceSm * scale);
+    const auto makeSlider =
+        [&](float value, float minValue, float maxValue, float step, std::vector<std::string> path,
+            bool integerValue = false,
+            std::function<std::vector<std::pair<std::vector<std::string>, ConfigOverrideValue>>(double)> linkedCommit =
+                {}) {
+          auto wrap = std::make_unique<Flex>();
+          wrap->setDirection(FlexDirection::Horizontal);
+          wrap->setAlign(FlexAlign::Center);
+          wrap->setGap(Style::spaceSm * scale);
 
-      auto valueInput = std::make_unique<Input>();
-      valueInput->setValue(formatSliderValue(value, integerValue));
-      valueInput->setFontSize(Style::fontSizeCaption * scale);
-      valueInput->setControlHeight(Style::controlHeightSm * scale);
-      valueInput->setHorizontalPadding(Style::spaceXs * scale);
-      valueInput->setSize(50.0f * scale, Style::controlHeightSm * scale);
-      auto* valueInputPtr = valueInput.get();
+          auto valueInput = std::make_unique<Input>();
+          valueInput->setValue(formatSliderValue(value, integerValue));
+          valueInput->setFontSize(Style::fontSizeCaption * scale);
+          valueInput->setControlHeight(Style::controlHeightSm * scale);
+          valueInput->setHorizontalPadding(Style::spaceXs * scale);
+          valueInput->setSize(50.0f * scale, Style::controlHeightSm * scale);
+          auto* valueInputPtr = valueInput.get();
 
-      auto slider = std::make_unique<Slider>();
-      slider->setRange(minValue, maxValue);
-      slider->setStep(step);
-      slider->setSize(Style::sliderDefaultWidth * scale, Style::controlHeight * scale);
-      slider->setControlHeight(Style::controlHeight * scale);
-      slider->setThumbSize(Style::sliderThumbSize * scale);
-      slider->setTrackHeight(Style::sliderTrackHeight * scale);
-      slider->setValue(value);
-      auto* sliderPtr = slider.get();
-      slider->setOnValueChanged([valueInputPtr, integerValue](float next) {
-        valueInputPtr->setInvalid(false);
-        valueInputPtr->setValue(formatSliderValue(next, integerValue));
-      });
-      slider->setOnDragEnd([setOverride = ctx.setOverride, path, sliderPtr, integerValue]() {
-        if (integerValue) {
-          setOverride(path, static_cast<std::int64_t>(std::lround(sliderPtr->value())));
-        } else {
-          setOverride(path, static_cast<double>(sliderPtr->value()));
-        }
-      });
+          auto slider = std::make_unique<Slider>();
+          slider->setRange(minValue, maxValue);
+          slider->setStep(step);
+          slider->setSize(Style::sliderDefaultWidth * scale, Style::controlHeight * scale);
+          slider->setControlHeight(Style::controlHeight * scale);
+          slider->setThumbSize(Style::sliderThumbSize * scale);
+          slider->setTrackHeight(Style::sliderTrackHeight * scale);
+          slider->setValue(value);
+          auto* sliderPtr = slider.get();
+          slider->setOnValueChanged([valueInputPtr, integerValue](float next) {
+            valueInputPtr->setInvalid(false);
+            valueInputPtr->setValue(formatSliderValue(next, integerValue));
+          });
 
-      valueInput->setOnChange([valueInputPtr](const std::string& /*text*/) { valueInputPtr->setInvalid(false); });
-      valueInput->setOnSubmit([setOverride = ctx.setOverride, path, sliderPtr, valueInputPtr, minValue, maxValue,
-                               integerValue](const std::string& text) {
-        const auto parsed = parseFloatInput(text);
-        if (!parsed.has_value() || *parsed < minValue || *parsed > maxValue) {
-          valueInputPtr->setInvalid(true);
-          return;
-        }
-        const float v = *parsed;
-        valueInputPtr->setInvalid(false);
-        sliderPtr->setValue(v);
-        if (!integerValue) {
-          const std::string trimmed = StringUtils::trim(text);
-          const char preferredSeparator = trimmed.find(',') != std::string::npos ? ',' : '.';
-          valueInputPtr->setValue(formatSliderValue(sliderPtr->value(), false, preferredSeparator));
-        }
-        if (integerValue) {
-          setOverride(path, static_cast<std::int64_t>(std::lround(v)));
-        } else {
-          setOverride(path, static_cast<double>(v));
-        }
-      });
+          // Helper: commit either via single setOverride or as an atomic batch when linkedCommit
+          // returns extra overrides (cross-field constraints).
+          const auto commit = [setOverride = ctx.setOverride, setOverrides = ctx.setOverrides, path, integerValue,
+                               linkedCommit](double v) {
+            ConfigOverrideValue primary =
+                integerValue ? ConfigOverrideValue{static_cast<std::int64_t>(std::lround(v))} : ConfigOverrideValue{v};
+            if (linkedCommit) {
+              auto extras = linkedCommit(v);
+              if (!extras.empty()) {
+                std::vector<std::pair<std::vector<std::string>, ConfigOverrideValue>> all;
+                all.reserve(extras.size() + 1);
+                all.emplace_back(path, std::move(primary));
+                for (auto& e : extras) {
+                  all.push_back(std::move(e));
+                }
+                setOverrides(std::move(all));
+                return;
+              }
+            }
+            setOverride(path, std::move(primary));
+          };
 
-      // Slider first, numeric value field on the right (reset from makeRow stays left of this cluster).
-      wrap->addChild(std::move(slider));
-      wrap->addChild(std::move(valueInput));
-      return wrap;
-    };
+          slider->setOnDragEnd([commit, sliderPtr]() { commit(static_cast<double>(sliderPtr->value())); });
+
+          valueInput->setOnChange([valueInputPtr](const std::string& /*text*/) { valueInputPtr->setInvalid(false); });
+          valueInput->setOnSubmit(
+              [commit, sliderPtr, valueInputPtr, minValue, maxValue, integerValue](const std::string& text) {
+                const auto parsed = parseFloatInput(text);
+                if (!parsed.has_value() || *parsed < minValue || *parsed > maxValue) {
+                  valueInputPtr->setInvalid(true);
+                  return;
+                }
+                const float v = *parsed;
+                valueInputPtr->setInvalid(false);
+                sliderPtr->setValue(v);
+                if (!integerValue) {
+                  const std::string trimmed = StringUtils::trim(text);
+                  const char preferredSeparator = trimmed.find(',') != std::string::npos ? ',' : '.';
+                  valueInputPtr->setValue(formatSliderValue(sliderPtr->value(), false, preferredSeparator));
+                }
+                commit(static_cast<double>(v));
+              });
+
+          // Slider first, numeric value field on the right (reset from makeRow stays left of this cluster).
+          wrap->addChild(std::move(slider));
+          wrap->addChild(std::move(valueInput));
+          return wrap;
+        };
 
     const auto makeText = [&](const std::string& value, const std::string& placeholder, std::vector<std::string> path) {
       auto input = std::make_unique<Input>();
@@ -698,7 +801,7 @@ namespace settings {
 
     const auto makeSearchPickerBlock = [&](Flex& section, const SettingEntry& entry,
                                            const SearchPickerSetting& setting) {
-      const bool overridden = (ctx.configService != nullptr && ctx.configService->hasOverride(entry.path));
+      const bool overridden = (ctx.configService != nullptr && ctx.configService->hasEffectiveOverride(entry.path));
       const std::string pickerPath = pathKey(entry.path);
 
       auto block = std::make_unique<Flex>();
@@ -709,7 +812,7 @@ namespace settings {
       const auto makeBadge = [&](std::string_view label, const ColorSpec& fill, const ColorSpec& color) {
         auto badge = std::make_unique<Flex>();
         badge->setAlign(FlexAlign::Center);
-        badge->setPadding(1.0f * scale, Style::spaceXs * scale);
+        badge->setPadding(0, Style::spaceXs * scale);
         badge->setRadius(Style::radiusSm * scale);
         badge->setFill(fill);
         badge->addChild(makeLabel(label, Style::fontSizeCaption * scale, color, true));
@@ -751,7 +854,6 @@ namespace settings {
       if (!entry.subtitle.empty()) {
         auto detail = makeLabel(entry.subtitle, Style::fontSizeCaption * scale,
                                 colorSpecFromRole(ColorRole::OnSurfaceVariant), false);
-        detail->setMaxWidth(360.0f * scale);
         copy->addChild(std::move(detail));
       }
 
@@ -819,7 +921,7 @@ namespace settings {
     };
 
     const auto makeMultiSelectBlock = [&](Flex& section, const SettingEntry& entry, const MultiSelectSetting& setting) {
-      const bool overridden = (ctx.configService != nullptr && ctx.configService->hasOverride(entry.path));
+      const bool overridden = (ctx.configService != nullptr && ctx.configService->hasEffectiveOverride(entry.path));
 
       auto block = std::make_unique<Flex>();
       block->setDirection(FlexDirection::Vertical);
@@ -911,7 +1013,7 @@ namespace settings {
     };
 
     const auto makeListBlock = [&](Flex& section, const SettingEntry& entry, const ListSetting& list) {
-      const bool overridden = (ctx.configService != nullptr && ctx.configService->hasOverride(entry.path));
+      const bool overridden = (ctx.configService != nullptr && ctx.configService->hasEffectiveOverride(entry.path));
 
       auto block = std::make_unique<Flex>();
       block->setDirection(FlexDirection::Vertical);
@@ -945,186 +1047,132 @@ namespace settings {
                                   colorSpecFromRole(ColorRole::OnSurfaceVariant), false));
       }
 
-      const auto resolveItemLabel = [&list](const std::string& value) -> std::string {
-        for (const auto& opt : list.suggestedOptions) {
-          if (opt.value == value) {
-            return opt.label;
-          }
-        }
-        return value;
-      };
-
-      const float labelCellWidth = 200.0f * scale;
-      for (std::size_t i = 0; i < list.items.size(); ++i) {
-        auto itemRow = std::make_unique<Flex>();
-        itemRow->setDirection(FlexDirection::Horizontal);
-        itemRow->setAlign(FlexAlign::Center);
-        itemRow->setGap(Style::spaceXs * scale);
-        itemRow->setMinHeight(Style::controlHeightSm * scale);
-
-        auto labelCell = std::make_unique<Flex>();
-        labelCell->setDirection(FlexDirection::Horizontal);
-        labelCell->setAlign(FlexAlign::Center);
-        labelCell->setMinWidth(labelCellWidth);
-        labelCell->addChild(makeLabel(resolveItemLabel(list.items[i]), Style::fontSizeCaption * scale,
-                                      colorSpecFromRole(ColorRole::OnSurface), false));
-        itemRow->addChild(std::move(labelCell));
-
-        auto removeBtn = std::make_unique<Button>();
-        removeBtn->setGlyph("close");
-        removeBtn->setVariant(ButtonVariant::Ghost);
-        removeBtn->setGlyphSize(Style::fontSizeCaption * scale);
-        removeBtn->setMinWidth(Style::controlHeightSm * scale);
-        removeBtn->setMinHeight(Style::controlHeightSm * scale);
-        removeBtn->setPadding(Style::spaceXs * scale);
-        removeBtn->setRadius(Style::radiusSm * scale);
-        {
-          auto items = list.items;
-          auto path = entry.path;
-          removeBtn->setOnClick([setOverride = ctx.setOverride, items, path, i]() mutable {
-            items.erase(items.begin() + static_cast<std::ptrdiff_t>(i));
-            setOverride(path, items);
-          });
-        }
-        itemRow->addChild(std::move(removeBtn));
-
-        if (i > 0) {
-          auto upBtn = std::make_unique<Button>();
-          upBtn->setGlyph("chevron-up");
-          upBtn->setVariant(ButtonVariant::Ghost);
-          upBtn->setGlyphSize(Style::fontSizeCaption * scale);
-          upBtn->setMinWidth(Style::controlHeightSm * scale);
-          upBtn->setMinHeight(Style::controlHeightSm * scale);
-          upBtn->setPadding(Style::spaceXs * scale);
-          upBtn->setRadius(Style::radiusSm * scale);
-          auto items = list.items;
-          auto path = entry.path;
-          upBtn->setOnClick([setOverride = ctx.setOverride, items, path, i]() mutable {
-            std::swap(items[i], items[i - 1]);
-            setOverride(path, items);
-          });
-          itemRow->addChild(std::move(upBtn));
-        }
-        if (i + 1 < list.items.size()) {
-          auto downBtn = std::make_unique<Button>();
-          downBtn->setGlyph("chevron-down");
-          downBtn->setVariant(ButtonVariant::Ghost);
-          downBtn->setGlyphSize(Style::fontSizeCaption * scale);
-          downBtn->setMinWidth(Style::controlHeightSm * scale);
-          downBtn->setMinHeight(Style::controlHeightSm * scale);
-          downBtn->setPadding(Style::spaceXs * scale);
-          downBtn->setRadius(Style::radiusSm * scale);
-          auto items = list.items;
-          auto path = entry.path;
-          downBtn->setOnClick([setOverride = ctx.setOverride, items, path, i]() mutable {
-            std::swap(items[i], items[i + 1]);
-            setOverride(path, items);
-          });
-          itemRow->addChild(std::move(downBtn));
-        }
-
-        block->addChild(std::move(itemRow));
+      auto listEditor = std::make_unique<ListEditor>();
+      listEditor->setScale(scale);
+      listEditor->setAddPlaceholder(i18n::tr("settings.controls.list.add-entry-placeholder"));
+      std::vector<ListEditorOption> suggestedOptions;
+      suggestedOptions.reserve(list.suggestedOptions.size());
+      for (const auto& opt : list.suggestedOptions) {
+        suggestedOptions.push_back(ListEditorOption{.value = opt.value, .label = opt.label});
       }
-
-      auto addRow = std::make_unique<Flex>();
-      addRow->setDirection(FlexDirection::Horizontal);
-      addRow->setAlign(FlexAlign::Center);
-      addRow->setGap(Style::spaceSm * scale);
-
-      const bool useSelectAdder = !list.suggestedOptions.empty();
-      std::vector<SelectOption> remaining;
-      if (useSelectAdder) {
-        remaining.reserve(list.suggestedOptions.size());
-        for (const auto& opt : list.suggestedOptions) {
-          if (std::find(list.items.begin(), list.items.end(), opt.value) == list.items.end()) {
-            remaining.push_back(opt);
-          }
-        }
-      }
-
-      if (useSelectAdder) {
-        if (remaining.empty()) {
-          // Every suggested value is already in the list — nothing to add.
-          section.addChild(std::move(block));
+      listEditor->setSuggestedOptions(std::move(suggestedOptions));
+      listEditor->setItems(list.items);
+      listEditor->setOnAddRequested(
+          [setOverride = ctx.setOverride, items = list.items, path = entry.path](std::string value) mutable {
+            if (value.empty()) {
+              return;
+            }
+            items.push_back(std::move(value));
+            setOverride(path, items);
+          });
+      listEditor->setOnRemoveRequested([setOverride = ctx.setOverride, setOverrides = ctx.setOverrides,
+                                        config = std::cref(cfg), items = list.items,
+                                        path = entry.path](std::size_t index) mutable {
+        if (index >= items.size()) {
           return;
         }
-
-        std::vector<std::string> remainingLabels;
-        remainingLabels.reserve(remaining.size());
-        for (const auto& opt : remaining) {
-          remainingLabels.push_back(opt.label);
-        }
-
-        auto select = std::make_unique<Select>();
-        select->setOptions(remainingLabels);
-        select->setPlaceholder(i18n::tr("settings.controls.list.add-entry-placeholder"));
-        select->setFontSize(Style::fontSizeCaption * scale);
-        select->setControlHeight(Style::controlHeightSm * scale);
-        select->setGlyphSize(Style::fontSizeCaption * scale);
-        select->setSize(labelCellWidth, Style::controlHeightSm * scale);
-        auto* selectPtr = select.get();
-
-        auto addBtn = std::make_unique<Button>();
-        addBtn->setGlyph("add");
-        addBtn->setVariant(ButtonVariant::Ghost);
-        addBtn->setGlyphSize(Style::fontSizeCaption * scale);
-        addBtn->setMinWidth(Style::controlHeightSm * scale);
-        addBtn->setMinHeight(Style::controlHeightSm * scale);
-        addBtn->setPadding(Style::spaceXs * scale);
-        addBtn->setRadius(Style::radiusSm * scale);
-
-        auto items = list.items;
-        auto path = entry.path;
-        addBtn->setOnClick([setOverride = ctx.setOverride, selectPtr, remaining, items, path]() mutable {
-          const std::size_t index = selectPtr->selectedIndex();
-          if (index >= remaining.size()) {
-            return;
-          }
-          items.push_back(remaining[index].value);
+        const std::string removedItem = items[index];
+        items.erase(items.begin() + static_cast<std::ptrdiff_t>(index));
+        const auto overrides = capsuleGroupRemovalOverrides(config.get(), path, removedItem, items);
+        if (overrides.size() == 1) {
           setOverride(path, items);
-        });
+          return;
+        }
+        setOverrides(overrides);
+      });
+      listEditor->setOnMoveRequested([setOverride = ctx.setOverride, items = list.items,
+                                      path = entry.path](std::size_t from, std::size_t to) mutable {
+        if (from >= items.size() || to >= items.size() || from == to) {
+          return;
+        }
+        std::swap(items[from], items[to]);
+        setOverride(path, items);
+      });
+      block->addChild(std::move(listEditor));
 
-        addRow->addChild(std::move(select));
-        addRow->addChild(std::move(addBtn));
-      } else {
-        auto addInput = std::make_unique<Input>();
-        addInput->setPlaceholder(i18n::tr("settings.controls.list.add-entry-placeholder"));
-        addInput->setFontSize(Style::fontSizeBody * scale);
-        addInput->setControlHeight(Style::controlHeight * scale);
-        addInput->setHorizontalPadding(Style::spaceSm * scale);
-        addInput->setSize(190.0f * scale, Style::controlHeight * scale);
-        auto* addInputPtr = addInput.get();
+      section.addChild(std::move(block));
+    };
 
-        auto addBtn = std::make_unique<Button>();
-        addBtn->setGlyph("add");
-        addBtn->setVariant(ButtonVariant::Ghost);
-        addBtn->setGlyphSize(Style::fontSizeBody * scale);
-        addBtn->setMinWidth(Style::controlHeight * scale);
-        addBtn->setMinHeight(Style::controlHeight * scale);
-        addBtn->setPadding(Style::spaceSm * scale);
-        addBtn->setRadius(Style::radiusMd * scale);
-        auto items = list.items;
-        auto path = entry.path;
-        addBtn->setOnClick([setOverride = ctx.setOverride, addInputPtr, items, path]() mutable {
-          const auto& text = addInputPtr->value();
-          if (!text.empty()) {
-            items.push_back(text);
-            setOverride(path, items);
-          }
-        });
+    const auto makeShortcutListBlock = [&](Flex& section, const SettingEntry& entry,
+                                           const ShortcutListSetting& shortcuts) {
+      const bool overridden = (ctx.configService != nullptr && ctx.configService->hasEffectiveOverride(entry.path));
 
-        addInput->setOnSubmit([setOverride = ctx.setOverride, items, path](const std::string& text) mutable {
-          if (!text.empty()) {
-            items.push_back(text);
-            setOverride(path, items);
-          }
-        });
+      auto block = std::make_unique<Flex>();
+      block->setDirection(FlexDirection::Vertical);
+      block->setAlign(FlexAlign::Stretch);
+      block->setGap(Style::spaceXs * scale);
+      block->setPadding(2.0f * scale, 0.0f);
 
-        addRow->addChild(std::move(addInput));
-        addRow->addChild(std::move(addBtn));
+      auto titleRow = std::make_unique<Flex>();
+      titleRow->setDirection(FlexDirection::Horizontal);
+      titleRow->setAlign(FlexAlign::Center);
+      titleRow->setGap(Style::spaceSm * scale);
+      titleRow->addChild(
+          makeLabel(entry.title, Style::fontSizeBody * scale, colorSpecFromRole(ColorRole::OnSurface), true));
+      if (overridden) {
+        auto badge = std::make_unique<Flex>();
+        badge->setAlign(FlexAlign::Center);
+        badge->setPadding(1.0f * scale, Style::spaceXs * scale);
+        badge->setRadius(Style::radiusSm * scale);
+        badge->setFill(colorSpecFromRole(ColorRole::Primary, 0.15f));
+        badge->addChild(makeLabel(i18n::tr("settings.badges.override"), Style::fontSizeCaption * scale,
+                                  colorSpecFromRole(ColorRole::Primary), true));
+        titleRow->addChild(std::move(badge));
+      }
+      if (overridden) {
+        titleRow->addChild(makeResetButton(entry.path));
+      }
+      block->addChild(std::move(titleRow));
+
+      if (!entry.subtitle.empty()) {
+        block->addChild(makeLabel(entry.subtitle, Style::fontSizeCaption * scale,
+                                  colorSpecFromRole(ColorRole::OnSurfaceVariant), false));
       }
 
-      block->addChild(std::move(addRow));
+      std::vector<std::string> itemTypes;
+      itemTypes.reserve(shortcuts.items.size());
+      for (const auto& item : shortcuts.items) {
+        itemTypes.push_back(item.type);
+      }
+
+      std::vector<ListEditorOption> suggestedOptions;
+      suggestedOptions.reserve(shortcuts.suggestedOptions.size());
+      for (const auto& opt : shortcuts.suggestedOptions) {
+        suggestedOptions.push_back(ListEditorOption{.value = opt.value, .label = opt.label});
+      }
+
+      auto listEditor = std::make_unique<ListEditor>();
+      listEditor->setScale(scale);
+      listEditor->setMaxItems(shortcuts.maxItems);
+      listEditor->setAddPlaceholder(i18n::tr("settings.controls.list.add-entry-placeholder"));
+      listEditor->setSuggestedOptions(std::move(suggestedOptions));
+      listEditor->setItems(std::move(itemTypes));
+      listEditor->setOnAddRequested(
+          [setOverride = ctx.setOverride, items = shortcuts.items, path = entry.path](std::string value) mutable {
+            if (value.empty() || std::any_of(items.begin(), items.end(),
+                                             [&value](const ShortcutConfig& item) { return item.type == value; })) {
+              return;
+            }
+            items.push_back(ShortcutConfig{std::move(value)});
+            setOverride(path, items);
+          });
+      listEditor->setOnRemoveRequested(
+          [setOverride = ctx.setOverride, items = shortcuts.items, path = entry.path](std::size_t index) mutable {
+            if (index >= items.size()) {
+              return;
+            }
+            items.erase(items.begin() + static_cast<std::ptrdiff_t>(index));
+            setOverride(path, items);
+          });
+      listEditor->setOnMoveRequested([setOverride = ctx.setOverride, items = shortcuts.items,
+                                      path = entry.path](std::size_t from, std::size_t to) mutable {
+        if (from >= items.size() || to >= items.size() || from == to) {
+          return;
+        }
+        std::swap(items[from], items[to]);
+        setOverride(path, items);
+      });
+      block->addChild(std::move(listEditor));
 
       section.addChild(std::move(block));
     };
@@ -1134,12 +1182,12 @@ namespace settings {
           [&](const auto& control) -> std::unique_ptr<Node> {
             using T = std::decay_t<decltype(control)>;
             if constexpr (std::is_same_v<T, ToggleSetting>) {
-              return makeToggle(control.checked, entry.path);
+              return makeToggle(control.checked, control.enabled, entry.path);
             } else if constexpr (std::is_same_v<T, SelectSetting>) {
               return makeSelect(control, entry.path);
             } else if constexpr (std::is_same_v<T, SliderSetting>) {
               return makeSlider(control.value, control.minValue, control.maxValue, control.step, entry.path,
-                                control.integerValue);
+                                control.integerValue, control.linkedCommit);
             } else if constexpr (std::is_same_v<T, TextSetting>) {
               return makeText(control.value, control.placeholder, entry.path);
             } else if constexpr (std::is_same_v<T, OptionalNumberSetting>) {
@@ -1151,6 +1199,8 @@ namespace settings {
             } else if constexpr (std::is_same_v<T, MultiSelectSetting>) {
               return nullptr;
             } else if constexpr (std::is_same_v<T, ListSetting>) {
+              return nullptr;
+            } else if constexpr (std::is_same_v<T, ShortcutListSetting>) {
               return nullptr;
             } else if constexpr (std::is_same_v<T, ButtonSetting>) {
               auto button = std::make_unique<Button>();
@@ -1197,7 +1247,7 @@ namespace settings {
         .makeResetButton = makeResetButton,
         .makeRow = makeRow,
         .makeToggle = [&](bool checked, std::vector<std::string> path) -> std::unique_ptr<Node> {
-          return makeToggle(checked, std::move(path));
+          return makeToggle(checked, true, std::move(path));
         },
         .makeSelect = [&](const SelectSetting& setting, std::vector<std::string> path) -> std::unique_ptr<Node> {
           return makeSelect(setting, std::move(path));
@@ -1221,7 +1271,8 @@ namespace settings {
       if (!ctx.showAdvanced && entry.advanced) {
         continue;
       }
-      if (ctx.showOverriddenOnly && ctx.configService != nullptr && !ctx.configService->hasOverride(entry.path)) {
+      if (ctx.showOverriddenOnly && ctx.configService != nullptr &&
+          !ctx.configService->hasEffectiveOverride(entry.path)) {
         continue;
       }
       if (!matchesNormalizedSettingQuery(entry, normalizedSearchQuery)) {
@@ -1254,6 +1305,8 @@ namespace settings {
           } else if (!isBarWidgetListPath(entry.path)) {
             makeListBlock(*activeSection, entry, *list);
           }
+        } else if (const auto* shortcuts = std::get_if<ShortcutListSetting>(&entry.control)) {
+          makeShortcutListBlock(*activeSection, entry, *shortcuts);
         } else if (const auto* picker = std::get_if<SearchPickerSetting>(&entry.control)) {
           if (ctx.openSearchPickerPath == pathKey(entry.path)) {
             makeSearchPickerBlock(*activeSection, entry, *picker);

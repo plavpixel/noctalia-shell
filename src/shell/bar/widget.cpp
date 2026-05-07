@@ -61,6 +61,10 @@ void Widget::setUpdateCallback(UpdateCallback callback) { m_updateCallback = std
 
 void Widget::setRedrawCallback(RedrawCallback callback) { m_redrawCallback = std::move(callback); }
 
+void Widget::setFrameTickRequestCallback(FrameTickRequestCallback callback) {
+  m_frameTickRequestCallback = std::move(callback);
+}
+
 void Widget::setPanelToggleCallback(PanelToggleCallback callback) { m_panelToggleCallback = std::move(callback); }
 
 void Widget::requestUpdate() {
@@ -75,8 +79,15 @@ void Widget::requestRedraw() {
   }
 }
 
-void Widget::requestPanelToggle(std::string_view panelId, std::string_view context) {
+void Widget::requestFrameTick() {
+  if (m_frameTickRequestCallback) {
+    m_frameTickRequestCallback();
+  }
+}
+
+void Widget::requestPanelToggle(std::string_view panelId, std::string_view context, std::optional<float> anchorSurfaceX,
+                                std::optional<float> anchorSurfaceY) {
   if (m_panelToggleCallback) {
-    m_panelToggleCallback(panelId, context);
+    m_panelToggleCallback(panelId, context, anchorSurfaceX, anchorSurfaceY);
   }
 }
